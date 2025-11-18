@@ -238,21 +238,28 @@ def create_demo():
 
 if __name__ == "__main__":
     # 创建并启动Gradio应用
-    demo = create_demo()
-    
-    # 获取端口（Google Cloud Run 会设置 PORT 环境变量）
-    port = int(os.getenv("PORT", 8080))
-    
-    # 启动应用
-    # share=False 在 Cloud Run 上不需要，因为已经有公共 URL
-    # 添加阻塞模式，确保应用持续运行
-    demo.launch(
-        server_name="0.0.0.0",  # 允许外部访问
-        server_port=port,  # 使用环境变量 PORT 或默认 8080
-        share=False,  # Cloud Run 不需要 share
-        show_error=True,  # 显示详细错误信息
-        show_api=False,  # 在 Cloud Run 上不需要显示 API 文档
-        prevent_thread_lock=False,  # 允许阻塞，保持容器运行
-        inbrowser=False  # Cloud Run 不需要打开浏览器
-    )
+    try:
+        demo = create_demo()
+        
+        # 获取端口（Google Cloud Run 会设置 PORT 环境变量）
+        port = int(os.getenv("PORT", 8080))
+        
+        logger.info(f"Starting Gradio application on 0.0.0.0:{port}")
+        
+        # 启动应用
+        # share=False 在 Cloud Run 上不需要，因为已经有公共 URL
+        # 添加阻塞模式，确保应用持续运行
+        demo.launch(
+            server_name="0.0.0.0",  # 允许外部访问
+            server_port=port,  # 使用环境变量 PORT 或默认 8080
+            share=False,  # Cloud Run 不需要 share
+            show_error=True,  # 显示详细错误信息
+            show_api=False,  # 在 Cloud Run 上不需要显示 API 文档
+            prevent_thread_lock=False,  # 允许阻塞，保持容器运行
+            inbrowser=False,  # Cloud Run 不需要打开浏览器
+            root_path="/"  # 设置根路径
+        )
+    except Exception as e:
+        logger.error(f"Failed to start Gradio application: {e}", exc_info=True)
+        raise
 

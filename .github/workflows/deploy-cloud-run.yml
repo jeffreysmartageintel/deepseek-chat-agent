@@ -589,13 +589,12 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --allow-unauthenticated \
             --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }},PORT=8080 \
-            --memory 1Gi \
+            --memory 2Gi \
             --cpu 2 \
             --timeout 300 \
             --max-instances 10 \
             --min-instances 0 \
-            --startup-cpu-boost \
-            --cpu-throttling \
+            --cpu-boost \
             --port 8080 \
             --no-traffic \
             --quiet || {
