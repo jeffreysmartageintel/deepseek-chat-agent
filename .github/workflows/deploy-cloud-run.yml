@@ -380,16 +380,18 @@ jobs:
           echo "最终镜像地址: $FINAL_IMAGE_AR"
           echo ""
 
-          # 设置输出变量（使用多行格式处理特殊字符）
-          # image_tag 不包含特殊字符，可以使用单行格式
+          # 设置输出变量
+          # 注意：GitHub Actions 的 outputs 对特殊字符的处理可能有问题
+          # 使用单行格式，但确保值被正确引用
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-          # image_artifact_registry 包含 / 和 :，使用多行格式确保正确传递
-          {
-            echo "image_artifact_registry<<EOF"
-            echo "$FINAL_IMAGE_AR"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
+          # 对于包含特殊字符的值，使用单行格式但确保值正确转义
+          # 如果值包含空格或特殊字符，需要用引号包裹
+          echo "image_artifact_registry=$FINAL_IMAGE_AR" >> $GITHUB_OUTPUT
+
+          # 验证输出是否正确写入
+          echo "检查 GITHUB_OUTPUT 中的 image_artifact_registry:"
+          grep "image_artifact_registry" $GITHUB_OUTPUT || echo "未找到 image_artifact_registry"
 
           echo "✅ 输出变量已设置"
           echo ""
@@ -521,17 +523,44 @@ jobs:
           echo "服务名称: ${{ env.SERVICE_NAME }}"
           echo "区域: ${{ env.REGION }}"
 
-          # 获取镜像地址
+          # 获取镜像地址（优先从 job outputs 获取）
           IMAGE_URL="${{ needs.build.outputs.image_artifact_registry }}"
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
 
-          # 验证镜像地址是否为空
+          # 如果镜像地址为空，尝试重新构建（作为备用方案）
+          if [ -z "$IMAGE_URL" ] || [ "$IMAGE_URL" == "" ]; then
+            echo "⚠️ 警告: 从 job outputs 获取的镜像地址为空，尝试重新构建"
+            echo "构建输出:"
+            echo "  image_tag: $IMAGE_TAG"
+            echo "  image_artifact_registry: $IMAGE_URL"
+            echo ""
+            
+            # 重新构建镜像地址
+            ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
+            SERVICE_NAME="${{ env.SERVICE_NAME }}"
+            
+            if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" == "" ]; then
+              echo "❌ 错误: image_tag 也为空，无法重新构建镜像地址"
+              exit 1
+            fi
+            
+            if [ -z "$ARTIFACT_REGISTRY_URL" ] || [ "$ARTIFACT_REGISTRY_URL" == "" ]; then
+              echo "❌ 错误: ARTIFACT_REGISTRY_URL 环境变量为空，无法重新构建镜像地址"
+              exit 1
+            fi
+            
+            # 清理尾部斜杠
+            ARTIFACT_REGISTRY_URL=$(echo "$ARTIFACT_REGISTRY_URL" | sed 's|/$||')
+            
+            # 重新构建镜像地址
+            IMAGE_URL="$ARTIFACT_REGISTRY_URL/$SERVICE_NAME:$IMAGE_TAG"
+            echo "✅ 已重新构建镜像地址: $IMAGE_URL"
+          fi
+
+          # 最终验证镜像地址
           if [ -z "$IMAGE_URL" ] || [ "$IMAGE_URL" == "" ]; then
             echo "❌ 错误: 镜像地址为空，无法部署"
-            echo "构建输出:"
-            echo "  image_tag: ${{ needs.build.outputs.image_tag }}"
-            echo "  image_artifact_registry: ${{ needs.build.outputs.image_artifact_registry }}"
-            echo ""
-            echo "请检查构建步骤是否成功完成"
+            echo "最终镜像地址: [$IMAGE_URL]"
             exit 1
           fi
 
