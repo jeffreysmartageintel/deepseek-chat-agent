@@ -258,9 +258,18 @@ jobs:
           IMAGE_TAG="${{ github.sha }}"
           ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
 
+          echo "=========================================="
+          echo "验证 Artifact Registry 配置"
+          echo "=========================================="
+          echo "ARTIFACT_REGISTRY_URL (原始值): [$ARTIFACT_REGISTRY_URL]"
+          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+          echo "IMAGE_TAG: $IMAGE_TAG"
+          echo ""
+
           # 验证 Artifact Registry URL 是否配置
           if [ -z "$ARTIFACT_REGISTRY_URL" ] || [ "$ARTIFACT_REGISTRY_URL" == "null" ] || [ "$ARTIFACT_REGISTRY_URL" == "" ]; then
             echo "❌ 错误: ARTIFACT_REGISTRY_URL 未配置，请设置 GitHub Secret ARTIFACTORY_URL"
+            echo "   当前值: [$ARTIFACT_REGISTRY_URL]"
             exit 1
           fi
 
@@ -268,13 +277,27 @@ jobs:
           if [[ ! "$ARTIFACT_REGISTRY_URL" == *".pkg.dev"* ]]; then
             echo "❌ 错误: ARTIFACT_REGISTRY_URL 格式无效"
             echo "   期望格式: REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY_NAME"
-            echo "   当前值: $ARTIFACT_REGISTRY_URL"
+            echo "   当前值: [$ARTIFACT_REGISTRY_URL]"
             exit 1
           fi
+
+          # 验证 URL 不包含尾部斜杠
+          ARTIFACT_REGISTRY_URL=$(echo "$ARTIFACT_REGISTRY_URL" | sed 's|/$||')
+          echo "ARTIFACT_REGISTRY_URL (处理后): [$ARTIFACT_REGISTRY_URL]"
+          echo ""
 
           # 构建 Artifact Registry 镜像标签
           IMAGE_AR="$ARTIFACT_REGISTRY_URL/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
           IMAGE_AR_LATEST="$ARTIFACT_REGISTRY_URL/${{ env.SERVICE_NAME }}:latest"
+
+          # 验证镜像地址是否正确构建
+          if [ -z "$IMAGE_AR" ] || [ "$IMAGE_AR" == "" ]; then
+            echo "❌ 错误: 镜像地址构建失败"
+            echo "ARTIFACT_REGISTRY_URL: $ARTIFACT_REGISTRY_URL"
+            echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+            echo "IMAGE_TAG: $IMAGE_TAG"
+            exit 1
+          fi
 
           # 构建 Docker 标签列表（使用 Artifact Registry）
           DOCKER_TAGS="-t $IMAGE_AR -t $IMAGE_AR_LATEST"
@@ -283,6 +306,7 @@ jobs:
           echo "构建 Docker 镜像"
           echo "=========================================="
           echo "镜像标签: $IMAGE_TAG"
+          echo "Artifact Registry URL: $ARTIFACT_REGISTRY_URL"
           echo "Artifact Registry 镜像: $IMAGE_AR"
           echo "Artifact Registry 镜像 (latest): $IMAGE_AR_LATEST"
           echo ""
@@ -293,17 +317,41 @@ jobs:
           docker build $DOCKER_TAGS .
 
           # 检查构建是否成功
-          if [ $? -ne 0 ]; then
-            echo "❌ Docker 镜像构建失败"
+          BUILD_EXIT_CODE=$?
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "❌ Docker 镜像构建失败，退出码: $BUILD_EXIT_CODE"
             exit 1
           fi
 
-          # 设置输出变量
+          # 再次验证镜像地址（构建后）
+          if [ -z "$IMAGE_AR" ] || [ "$IMAGE_AR" == "" ]; then
+            echo "❌ 错误: 构建后镜像地址为空"
+            exit 1
+          fi
+
+          # 设置输出变量（确保格式正确，无多余空格）
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "image_artifact_registry=$IMAGE_AR" >> $GITHUB_OUTPUT
 
           echo "✅ Docker 镜像构建完成"
-          echo "输出镜像地址: $IMAGE_AR"
+          echo ""
+          echo "=========================================="
+          echo "输出变量设置"
+          echo "=========================================="
+          echo "image_tag: $IMAGE_TAG"
+          echo "image_artifact_registry: $IMAGE_AR"
+          echo ""
+
+          # 验证输出是否已正确设置
+          if [ -z "$IMAGE_AR" ]; then
+            echo "❌ 警告: IMAGE_AR 变量为空，输出可能无法正确设置"
+            exit 1
+          fi
+
+          # 显示 GITHUB_OUTPUT 内容（用于调试）
+          echo "GITHUB_OUTPUT 内容:"
+          cat $GITHUB_OUTPUT || echo "无法读取 GITHUB_OUTPUT"
+          echo "=========================================="
 
       - name: 推送镜像到 Google Artifact Registry
         run: |
