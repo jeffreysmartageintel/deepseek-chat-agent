@@ -252,7 +252,7 @@ jobs:
           IMAGE_TAG="${{ github.sha }}"
           IMAGE_GCR="gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
 
-     # 构建 Docker 标签列表（始终包含 GCR 标签）
+          # 构建 Docker 标签列表（始终包含 GCR 标签）
           DOCKER_TAGS="-t $IMAGE_GCR -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest"     
 
           # 检查 Artifact Registry URL 是否配置且有效
