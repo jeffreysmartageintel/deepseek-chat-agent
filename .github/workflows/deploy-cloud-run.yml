@@ -589,13 +589,15 @@ jobs:
             --format="value(metadata.name)" 2>/dev/null || echo "")
 
           # 构建部署命令
+          # 注意：PORT 是 Cloud Run 的保留环境变量，不能手动设置
+          # Cloud Run 会自动设置 PORT=8080，应用应该从环境变量读取
           DEPLOY_CMD="gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image \"$IMAGE_URL\" \
             --platform managed \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
             --allow-unauthenticated \
-            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }},PORT=8080 \
+            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }} \
             --memory 2Gi \
             --cpu 2 \
             --timeout 300 \
