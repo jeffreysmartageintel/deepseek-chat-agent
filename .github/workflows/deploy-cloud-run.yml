@@ -8,7 +8,7 @@ env:
   # Google Cloud 配置变量
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   SERVICE_NAME: deepseek-chat-agent
-  REGION: asia-east1
+  REGION: us-central1
 
   # Google Artifact Registry 配置变量（必需）
   ARTIFACT_REGISTRY_URL: ${{ secrets.ARTIFACTORY_URL }} # Google Artifact Registry URL，例如: us-central1-docker.pkg.dev/project-id/repository-name
@@ -178,14 +178,13 @@ jobs:
       - name: 发送检查失败通知到 Lark
         if: failure()
         run: |
+          FAIL_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="❌ DeepSeek Chat Agent - 检查 Push 失败！\n\n失败信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: ${FAIL_TIME}\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${RUN_URL}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "❌ DeepSeek Chat Agent - 检查 Push 失败！\n\n失败信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
   send-no-push-email:
     name: "发送无 Push 通知到 Lark"
@@ -195,14 +194,13 @@ jobs:
     steps:
       - name: 发送 Lark 通知
         run: |
+          CURRENT_DATE=$(date +'%Y-%m-%d')
+          CURRENT_TIME=$(date +'%H:%M:%S')
+          MESSAGE="📭 DeepSeek Chat Agent - 今日无需构建\n\n由于今天 19:30（北京时间）之前没有代码 push 到仓库，今天不需要构建代码。\n\n日期: ${CURRENT_DATE}\n时间: ${CURRENT_TIME}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "📭 DeepSeek Chat Agent - 今日无需构建\n\n由于今天 19:30（北京时间）之前没有代码 push 到仓库，今天不需要构建代码。\n\n日期: $(date +'%Y-%m-%d')\n时间: $(date +'%H:%M:%S')\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
   build:
     name: "构建 Docker 镜像"
@@ -319,26 +317,26 @@ jobs:
       - name: 发送构建成功等待批准通知到 Lark
         if: success()
         run: |
+          BUILD_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          IMAGE_URL="${{ steps.build.outputs.image_artifact_registry }}"
+          MESSAGE="✅ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: ${BUILD_TIME}\n- 镜像标签: ${IMAGE_TAG}\n- Artifact Registry 镜像: ${IMAGE_URL}\n\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\n1. 前往当前工作流运行页面：${RUN_URL}\n2. 找到 '部署到 Google Cloud Run（需要批准）' job\n3. 点击 'Review deployments' 按钮\n4. 点击 'Approve and deploy' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "✅ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ steps.build.outputs.image_tag }}\n- Artifact Registry 镜像: ${{ steps.build.outputs.image_artifact_registry }}\n\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\n1. 前往当前工作流运行页面：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n2. 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n3. 点击 '\''Review deployments'\'' 按钮\n4. 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
       - name: 发送构建失败通知到 Lark
         if: failure()
         run: |
+          FAIL_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="❌ DeepSeek Chat Agent - 构建失败！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: ${FAIL_TIME}\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${RUN_URL}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "❌ DeepSeek Chat Agent - 构建失败！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
   notify-pending-approval:
     name: "通知等待部署批准"
@@ -348,14 +346,14 @@ jobs:
     steps:
       - name: 发送等待批准通知到 Lark
         run: |
+          BUILD_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          MESSAGE="⏳ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: ${BUILD_TIME}\n- 镜像标签: ${IMAGE_TAG}\n\n📋 批准部署步骤（GitHub Environment 审批）：\n\n1️⃣ 前往当前工作流运行页面\n   ${RUN_URL}\n\n2️⃣ 找到 '部署到 Google Cloud Run（需要批准）' job\n\n3️⃣ 点击 'Review deployments' 按钮\n\n4️⃣ 点击 'Approve and deploy' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "⏳ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n📋 批准部署步骤（GitHub Environment 审批）：\n\n1️⃣ 前往当前工作流运行页面\n   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n2️⃣ 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n\n3️⃣ 点击 '\''Review deployments'\'' 按钮\n\n4️⃣ 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
   deploy-to-cloud-run:
     name: "部署到 Google Cloud Run（需要批准）"
@@ -434,23 +432,25 @@ jobs:
       - name: 发送最终部署成功通知到 Lark
         if: success()
         run: |
+          DEPLOY_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          IMAGE_URL="${{ needs.build.outputs.image_artifact_registry }}"
+          SERVICE_URL="${{ steps.service_url.outputs.service_url }}"
+          CONSOLE_URL="https://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}"
+          MESSAGE="✅ DeepSeek Chat Agent - 构建和部署成功完成！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 批准人: ${{ github.actor }}\n- 部署时间: ${DEPLOY_TIME}\n- 镜像标签: ${IMAGE_TAG}\n\n服务信息：\n- 服务名称: ${{ env.SERVICE_NAME }}\n- 区域: ${{ env.REGION }}\n- Gradio UI: ${SERVICE_URL}\n\n镜像信息：\n- Artifact Registry 镜像: ${IMAGE_URL}\n\n查看服务：\n${CONSOLE_URL}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "✅ DeepSeek Chat Agent - 构建和部署成功完成！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 批准人: ${{ github.actor }}\n- 部署时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n服务信息：\n- 服务名称: ${{ env.SERVICE_NAME }}\n- 区域: ${{ env.REGION }}\n- Gradio UI: ${{ steps.service_url.outputs.service_url }}\n\n镜像信息：\n- Artifact Registry 镜像: ${{ needs.build.outputs.image_artifact_registry }}\n\n查看服务：\nhttps://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
 
       - name: 发送部署失败通知到 Lark
         if: failure()
         run: |
+          FAIL_TIME=$(date +'%Y-%m-%d %H:%M:%S')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          IMAGE_URL="${{ needs.build.outputs.image_artifact_registry }}"
+          MESSAGE="❌ DeepSeek Chat Agent - 部署失败！\n\n部署信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: ${FAIL_TIME}\n- 镜像: ${IMAGE_URL}\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${RUN_URL}\n\n此通知由 GitHub Actions 自动发送。"
+          JSON_DATA=$(jq -n --arg msg "$MESSAGE" '{"msg_type": "text", "content": {"text": $msg}}')
           curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "text",
-              "content": {
-                "text": "❌ DeepSeek Chat Agent - 部署失败！\n\n部署信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像: ${{ needs.build.outputs.image_artifact_registry }}\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
-              }
-            }'
+            -d "$JSON_DATA"
