@@ -88,12 +88,12 @@ jobs:
             exit 0
           fi
 
-          # 如果是手动触发但未勾选批准，检查是否是强制构建
+          # 如果是手动触发且勾选了强制构建，跳过 push 检查（用于强制构建，不等待批准）
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_build }}" == "true" ]; then
             echo "=========================================="
             echo "强制构建触发"
             echo "=========================================="
-            echo "✅ 强制构建已启用，跳过时间检查"
+            echo "✅ 强制构建已启用，跳过 push 检查"
             echo "has_push=true" >> $GITHUB_OUTPUT
             echo "=========================================="
             exit 0
@@ -326,31 +326,43 @@ jobs:
           # 再次验证镜像地址（构建后）
           if [ -z "$IMAGE_AR" ] || [ "$IMAGE_AR" == "" ]; then
             echo "❌ 错误: 构建后镜像地址为空"
+            echo "调试信息:"
+            echo "  ARTIFACT_REGISTRY_URL: $ARTIFACT_REGISTRY_URL"
+            echo "  SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+            echo "  IMAGE_TAG: $IMAGE_TAG"
             exit 1
           fi
-
-          # 设置输出变量（确保格式正确，无多余空格）
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "image_artifact_registry=$IMAGE_AR" >> $GITHUB_OUTPUT
 
           echo "✅ Docker 镜像构建完成"
           echo ""
           echo "=========================================="
-          echo "输出变量设置"
+          echo "准备设置输出变量"
           echo "=========================================="
           echo "image_tag: $IMAGE_TAG"
           echo "image_artifact_registry: $IMAGE_AR"
+          echo "IMAGE_AR 长度: ${#IMAGE_AR}"
           echo ""
 
-          # 验证输出是否已正确设置
-          if [ -z "$IMAGE_AR" ]; then
-            echo "❌ 警告: IMAGE_AR 变量为空，输出可能无法正确设置"
-            exit 1
-          fi
+          # 使用多行格式设置输出，确保特殊字符被正确处理
+          {
+            echo "image_tag<<EOF"
+            echo "$IMAGE_TAG"
+            echo "EOF"
+            echo "image_artifact_registry<<EOF"
+            echo "$IMAGE_AR"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
-          # 显示 GITHUB_OUTPUT 内容（用于调试）
-          echo "GITHUB_OUTPUT 内容:"
-          cat $GITHUB_OUTPUT || echo "无法读取 GITHUB_OUTPUT"
+          echo "✅ 输出变量已设置"
+          echo ""
+          echo "验证输出变量（从 GITHUB_OUTPUT 读取）:"
+          if [ -f "$GITHUB_OUTPUT" ]; then
+            echo "GITHUB_OUTPUT 文件存在"
+            echo "最后几行内容:"
+            tail -5 "$GITHUB_OUTPUT" || echo "无法读取最后几行"
+          else
+            echo "⚠️ 警告: GITHUB_OUTPUT 文件不存在"
+          fi
           echo "=========================================="
 
       - name: 推送镜像到 Google Artifact Registry
