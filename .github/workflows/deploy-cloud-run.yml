@@ -214,6 +214,7 @@ jobs:
       build_sha: ${{ github.sha }}
       image_tag: ${{ steps.build.outputs.image_tag }}
       image_artifact_registry: ${{ steps.build.outputs.image_artifact_registry }}
+    # 注意：job outputs 必须引用步骤的 outputs，步骤 outputs 通过 GITHUB_OUTPUT 设置
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -257,14 +258,20 @@ jobs:
         run: |
           IMAGE_TAG="${{ github.sha }}"
           ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
+          SERVICE_NAME="${{ env.SERVICE_NAME }}"
 
           echo "=========================================="
           echo "验证 Artifact Registry 配置"
           echo "=========================================="
           echo "ARTIFACT_REGISTRY_URL (原始值): [$ARTIFACT_REGISTRY_URL]"
-          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+          echo "SERVICE_NAME: $SERVICE_NAME"
           echo "IMAGE_TAG: $IMAGE_TAG"
           echo ""
+
+          # 保存到环境变量文件，以便后续步骤使用
+          echo "ARTIFACT_REGISTRY_URL=$ARTIFACT_REGISTRY_URL" >> $GITHUB_ENV
+          echo "SERVICE_NAME=$SERVICE_NAME" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
           # 验证 Artifact Registry URL 是否配置
           if [ -z "$ARTIFACT_REGISTRY_URL" ] || [ "$ARTIFACT_REGISTRY_URL" == "null" ] || [ "$ARTIFACT_REGISTRY_URL" == "" ]; then
@@ -341,25 +348,60 @@ jobs:
           echo "image_tag: $IMAGE_TAG"
           echo "image_artifact_registry: $IMAGE_AR"
           echo "IMAGE_AR 长度: ${#IMAGE_AR}"
+          echo "ARTIFACT_REGISTRY_URL: $ARTIFACT_REGISTRY_URL"
+          echo "SERVICE_NAME: $SERVICE_NAME"
           echo ""
 
-          # 使用多行格式设置输出，确保特殊字符被正确处理
+          # 重新构建镜像地址以确保正确性（使用当前变量值）
+          # 如果变量为空，尝试从环境变量获取
+          if [ -z "$ARTIFACT_REGISTRY_URL" ] || [ "$ARTIFACT_REGISTRY_URL" == "" ]; then
+            echo "⚠️ 警告: ARTIFACT_REGISTRY_URL 变量为空，尝试从环境变量获取"
+            ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
+          fi
+          if [ -z "$SERVICE_NAME" ] || [ "$SERVICE_NAME" == "" ]; then
+            echo "⚠️ 警告: SERVICE_NAME 变量为空，尝试从环境变量获取"
+            SERVICE_NAME="${{ env.SERVICE_NAME }}"
+          fi
+
+          # 构建最终镜像地址
+          FINAL_IMAGE_AR="$ARTIFACT_REGISTRY_URL/$SERVICE_NAME:$IMAGE_TAG"
+
+          # 验证最终镜像地址
+          if [ -z "$FINAL_IMAGE_AR" ] || [ "$FINAL_IMAGE_AR" == "" ]; then
+            echo "❌ 错误: 最终镜像地址为空"
+            echo "ARTIFACT_REGISTRY_URL: [$ARTIFACT_REGISTRY_URL]"
+            echo "SERVICE_NAME: [$SERVICE_NAME]"
+            echo "IMAGE_TAG: [$IMAGE_TAG]"
+            echo "从 env 获取 ARTIFACT_REGISTRY_URL: [${{ env.ARTIFACT_REGISTRY_URL }}]"
+            echo "从 env 获取 SERVICE_NAME: [${{ env.SERVICE_NAME }}]"
+            exit 1
+          fi
+
+          echo "最终镜像地址: $FINAL_IMAGE_AR"
+          echo ""
+
+          # 设置输出变量（使用多行格式处理特殊字符）
+          # image_tag 不包含特殊字符，可以使用单行格式
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+          # image_artifact_registry 包含 / 和 :，使用多行格式确保正确传递
           {
-            echo "image_tag<<EOF"
-            echo "$IMAGE_TAG"
-            echo "EOF"
             echo "image_artifact_registry<<EOF"
-            echo "$IMAGE_AR"
+            echo "$FINAL_IMAGE_AR"
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
           echo "✅ 输出变量已设置"
           echo ""
-          echo "验证输出变量（从 GITHUB_OUTPUT 读取）:"
+          echo "验证输出变量:"
+          echo "  image_tag: $IMAGE_TAG"
+          echo "  image_artifact_registry: $FINAL_IMAGE_AR"
+          echo ""
+
+          # 验证 GITHUB_OUTPUT 文件内容
           if [ -f "$GITHUB_OUTPUT" ]; then
-            echo "GITHUB_OUTPUT 文件存在"
-            echo "最后几行内容:"
-            tail -5 "$GITHUB_OUTPUT" || echo "无法读取最后几行"
+            echo "GITHUB_OUTPUT 文件内容（最后 3 行）:"
+            tail -3 "$GITHUB_OUTPUT" || echo "无法读取"
           else
             echo "⚠️ 警告: GITHUB_OUTPUT 文件不存在"
           fi
@@ -381,6 +423,19 @@ jobs:
           echo ""
           echo "✅ 镜像已推送到 Google Artifact Registry"
           echo "镜像地址: ${{ steps.build.outputs.image_artifact_registry }}"
+
+      - name: 验证 Job 输出（调试）
+        run: |
+          echo "=========================================="
+          echo "验证步骤输出变量（用于 Job outputs）"
+          echo "=========================================="
+          echo "步骤 build 的输出:"
+          echo "  image_tag: ${{ steps.build.outputs.image_tag }}"
+          echo "  image_artifact_registry: ${{ steps.build.outputs.image_artifact_registry }}"
+          echo ""
+          echo "注意：这些输出将用于 Job 的 outputs 定义，"
+          echo "然后可以通过 needs.build.outputs 在其他 job 中访问"
+          echo "=========================================="
 
       - name: 发送构建成功等待批准通知到 Lark
         if: success()
