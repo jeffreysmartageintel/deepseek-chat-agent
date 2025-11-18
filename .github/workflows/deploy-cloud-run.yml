@@ -292,10 +292,18 @@ jobs:
           # 构建镜像
           docker build $DOCKER_TAGS .
 
+          # 检查构建是否成功
+          if [ $? -ne 0 ]; then
+            echo "❌ Docker 镜像构建失败"
+            exit 1
+          fi
+
+          # 设置输出变量
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "image_artifact_registry=$IMAGE_AR" >> $GITHUB_OUTPUT
 
           echo "✅ Docker 镜像构建完成"
+          echo "输出镜像地址: $IMAGE_AR"
 
       - name: 推送镜像到 Google Artifact Registry
         run: |
@@ -397,13 +405,28 @@ jobs:
           echo "=========================================="
           echo "服务名称: ${{ env.SERVICE_NAME }}"
           echo "区域: ${{ env.REGION }}"
-          echo "镜像: ${{ needs.build.outputs.image_artifact_registry }}"
+
+          # 获取镜像地址
+          IMAGE_URL="${{ needs.build.outputs.image_artifact_registry }}"
+
+          # 验证镜像地址是否为空
+          if [ -z "$IMAGE_URL" ] || [ "$IMAGE_URL" == "" ]; then
+            echo "❌ 错误: 镜像地址为空，无法部署"
+            echo "构建输出:"
+            echo "  image_tag: ${{ needs.build.outputs.image_tag }}"
+            echo "  image_artifact_registry: ${{ needs.build.outputs.image_artifact_registry }}"
+            echo ""
+            echo "请检查构建步骤是否成功完成"
+            exit 1
+          fi
+
+          echo "镜像: $IMAGE_URL"
           echo ""
 
           # 部署到 Cloud Run
           # 注意：Gradio 应用需要更多内存和 CPU 资源
           gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image ${{ needs.build.outputs.image_artifact_registry }} \
+            --image "$IMAGE_URL" \
             --platform managed \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
