@@ -57,6 +57,14 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Google Cloud Service Account Keys (敏感文件，不要提交)
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+firbase-app1-17308-*.json
+*-*.json
+
 # Logs
 *.log
 logs/
