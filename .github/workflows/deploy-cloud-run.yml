@@ -381,17 +381,23 @@ jobs:
           echo ""
 
           # 设置输出变量
-          # 注意：GitHub Actions 的 outputs 对特殊字符的处理可能有问题
-          # 使用单行格式，但确保值被正确引用
+          # image_tag 不包含特殊字符，使用单行格式
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-          # 对于包含特殊字符的值，使用单行格式但确保值正确转义
-          # 如果值包含空格或特殊字符，需要用引号包裹
-          echo "image_artifact_registry=$FINAL_IMAGE_AR" >> $GITHUB_OUTPUT
+          # image_artifact_registry 包含特殊字符（/ 和 :），必须使用多行格式（heredoc）
+          # 这是 GitHub Actions 处理包含特殊字符的输出的标准方式
+          {
+            echo "image_artifact_registry<<EOF"
+            echo "$FINAL_IMAGE_AR"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
           # 验证输出是否正确写入
-          echo "检查 GITHUB_OUTPUT 中的 image_artifact_registry:"
-          grep "image_artifact_registry" $GITHUB_OUTPUT || echo "未找到 image_artifact_registry"
+          echo "检查 GITHUB_OUTPUT 中的输出:"
+          echo "image_tag 行:"
+          grep "^image_tag=" $GITHUB_OUTPUT || echo "未找到 image_tag"
+          echo "image_artifact_registry 行（前3行）:"
+          grep -A 2 "image_artifact_registry<<EOF" $GITHUB_OUTPUT || echo "未找到 image_artifact_registry"
 
           echo "✅ 输出变量已设置"
           echo ""
@@ -569,18 +575,41 @@ jobs:
 
           # 部署到 Cloud Run
           # 注意：Gradio 应用需要更多内存和 CPU 资源
+          # 增加启动超时时间，因为 Gradio 应用启动可能需要更长时间
+          echo "开始部署到 Cloud Run..."
+          echo "镜像: $IMAGE_URL"
+          echo "项目: ${{ env.PROJECT_ID }}"
+          echo "区域: ${{ env.REGION }}"
+          echo ""
+
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image "$IMAGE_URL" \
             --platform managed \
             --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
             --allow-unauthenticated \
-            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }} \
+            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }},PORT=8080 \
             --memory 1Gi \
             --cpu 2 \
             --timeout 300 \
             --max-instances 10 \
             --min-instances 0 \
-            --quiet
+            --startup-cpu-boost \
+            --cpu-throttling \
+            --port 8080 \
+            --no-traffic \
+            --quiet || {
+              echo "❌ 部署失败，获取详细错误信息..."
+              gcloud run services describe ${{ env.SERVICE_NAME }} \
+                --region ${{ env.REGION }} \
+                --project ${{ env.PROJECT_ID }} \
+                --format="value(status.conditions)" || true
+              exit 1
+            }
+
+          # 等待服务就绪
+          echo "等待服务就绪..."
+          sleep 5
 
           echo "✅ 部署完成"
 
