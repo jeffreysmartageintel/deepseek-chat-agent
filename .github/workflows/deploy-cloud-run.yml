@@ -10,14 +10,14 @@ env:
   SERVICE_NAME: deepseek-chat-agent
   REGION: asia-east1
 
-  # Artifactory 配置变量
-  ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }} # Artifactory URL，例如: https://your-company.jfrog.io
-  ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO || 'docker-local' }} # Artifactory Docker仓库名称
-  ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
-  ARTIFACTORY_PASSWORD: ${{ secrets.ARTIFACTORY_PASSWORD }}
+  # Google Artifact Registry 配置变量
+  ARTIFACT_REGISTRY_URL: ${{ secrets.ARTIFACTORY_URL }} # Google Artifact Registry URL，例如: asia-east1-docker.pkg.dev/project-id/repository-name
 
   # 构建配置变量
   CHECK_TIME_BJ: "19:30" # 检查 push 的时间点（北京时间 19:30）
+
+  # DeepSeek API 配置变量
+  DEEPSEEK_API_BASE: ${{ secrets.DEEPSEEK_API_BASE || 'https://api.deepseek.com/v1' }} # DeepSeek API Base URL（可选，默认使用官方 API）
 
 on:
   schedule:
@@ -216,7 +216,7 @@ jobs:
       build_sha: ${{ github.sha }}
       image_tag: ${{ steps.build.outputs.image_tag }}
       image_gcr: ${{ steps.build.outputs.image_gcr }}
-      image_artifactory: ${{ steps.build.outputs.image_artifactory }}
+      image_artifact_registry: ${{ steps.build.outputs.image_artifact_registry }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -231,30 +231,66 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker
+      - name: Configure Docker for GCR and Artifact Registry
+        run: |
+          # 配置 Google Container Registry
+          gcloud auth configure-docker
+          # 配置 Google Artifact Registry（如果配置了）
+          ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
+          if [ -n "$ARTIFACT_REGISTRY_URL" ] && [ "$ARTIFACT_REGISTRY_URL" != "null" ] && [[ "$ARTIFACT_REGISTRY_URL" == *".pkg.dev"* ]]; then
+            # 从 URL 中提取区域（例如：asia-east1-docker.pkg.dev -> asia-east1）
+            REGION=$(echo "$ARTIFACT_REGISTRY_URL" | cut -d'-' -f1)
+            echo "配置 Artifact Registry Docker 认证: ${REGION}-docker.pkg.dev"
+            gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+          else
+            echo "ℹ️ Artifact Registry 未配置或格式无效，跳过 Docker 认证配置"
+          fi
 
       - name: 构建 Docker 镜像
         id: build
         run: |
           IMAGE_TAG="${{ github.sha }}"
           IMAGE_GCR="gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
-          IMAGE_ARTIFACTORY="${{ env.ARTIFACTORY_URL }}/${{ env.ARTIFACTORY_REPO }}/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
+
+     # 构建 Docker 标签列表（始终包含 GCR 标签）
+          DOCKER_TAGS="-t $IMAGE_GCR -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest"     
+
+          # 检查 Artifact Registry URL 是否配置且有效
+          ARTIFACT_REGISTRY_URL="${{ env.ARTIFACT_REGISTRY_URL }}"
+          if [ -n "$ARTIFACT_REGISTRY_URL" ] && [ "$ARTIFACT_REGISTRY_URL" != "null" ] && [ "$ARTIFACT_REGISTRY_URL" != "" ]; then
+            # 验证 URL 格式（应该包含 .pkg.dev）
+            if [[ "$ARTIFACT_REGISTRY_URL" == *".pkg.dev"* ]]; then
+              IMAGE_AR="$ARTIFACT_REGISTRY_URL/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
+              IMAGE_AR_LATEST="$ARTIFACT_REGISTRY_URL/${{ env.SERVICE_NAME }}:latest"
+              DOCKER_TAGS="$DOCKER_TAGS -t $IMAGE_AR -t $IMAGE_AR_LATEST"
+              echo "image_artifact_registry=$IMAGE_AR" >> $GITHUB_OUTPUT
+              echo "✅ Artifact Registry 已配置: $ARTIFACT_REGISTRY_URL"
+            else
+              echo "⚠️ 警告: ARTIFACT_REGISTRY_URL 格式无效，跳过 Artifact Registry 标签"
+              echo "   期望格式: REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY_NAME"
+              echo "   当前值: $ARTIFACT_REGISTRY_URL"
+            fi
+          else
+            echo "ℹ️ Artifact Registry 未配置，仅推送到 GCR"
+          fi
 
           echo "=========================================="
           echo "构建 Docker 镜像"
           echo "=========================================="
           echo "镜像标签: $IMAGE_TAG"
           echo "GCR 镜像: $IMAGE_GCR"
-          echo "Artifactory 镜像: $IMAGE_ARTIFACTORY"
+          if [ -n "$ARTIFACT_REGISTRY_URL" ] && [ "$ARTIFACT_REGISTRY_URL" != "null" ] && [[ "$ARTIFACT_REGISTRY_URL" == *".pkg.dev"* ]]; then
+            echo "Artifact Registry 镜像: $IMAGE_AR"
+          fi
+          echo ""
+          echo "Docker 标签: $DOCKER_TAGS"
           echo ""
 
           # 构建镜像
-          docker build -t $IMAGE_GCR -t $IMAGE_ARTIFACTORY -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest .
+          docker build $DOCKER_TAGS .
 
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "image_gcr=$IMAGE_GCR" >> $GITHUB_OUTPUT
-          echo "image_artifactory=$IMAGE_ARTIFACTORY" >> $GITHUB_OUTPUT
 
           echo "✅ Docker 镜像构建完成"
 
@@ -265,21 +301,19 @@ jobs:
           docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
           echo "✅ 镜像已推送到 GCR"
 
-      - name: 推送镜像到 Artifactory
-        if: env.ARTIFACTORY_URL != '' && env.ARTIFACTORY_USER != '' && env.ARTIFACTORY_PASSWORD != ''
+      - name: 推送镜像到 Google Artifact Registry
+        if: env.ARTIFACT_REGISTRY_URL != ''
         run: |
           echo "=========================================="
-          echo "推送镜像到 Artifactory"
+          echo "推送镜像到 Google Artifact Registry"
           echo "=========================================="
 
-          # 登录到 Artifactory
-          echo "${{ env.ARTIFACTORY_PASSWORD }}" | docker login ${{ env.ARTIFACTORY_URL }} -u "${{ env.ARTIFACTORY_USER }}" --password-stdin
+          # 推送带标签的镜像
+          docker push ${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image_tag }}
+          docker push ${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.SERVICE_NAME }}:latest
 
-          # 推送镜像
-          docker push ${{ steps.build.outputs.image_artifactory }}
-
-          echo "✅ 镜像已推送到 Artifactory"
-          echo "镜像地址: ${{ steps.build.outputs.image_artifactory }}"
+          echo "✅ 镜像已推送到 Google Artifact Registry"
+          echo "镜像地址: ${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image_tag }}"
 
       - name: 发送构建成功等待批准通知到 Lark
         if: success()
@@ -289,7 +323,7 @@ jobs:
             -d '{
               "msg_type": "text",
               "content": {
-                "text": "✅ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ steps.build.outputs.image_tag }}\n- GCR 镜像: ${{ steps.build.outputs.image_gcr }}\n- Artifactory 镜像: ${{ steps.build.outputs.image_artifactory }}\n\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\n1. 前往当前工作流运行页面：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n2. 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n3. 点击 '\''Review deployments'\'' 按钮\n4. 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+                "text": "✅ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ steps.build.outputs.image_tag }}\n- GCR 镜像: ${{ steps.build.outputs.image_gcr }}\n\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\n1. 前往当前工作流运行页面：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n2. 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n3. 点击 '\''Review deployments'\'' 按钮\n4. 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
               }
             }'
 
@@ -374,7 +408,7 @@ jobs:
             --platform managed \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
-            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=https://api.deepseek.com/v1 \
+            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=${{ env.DEEPSEEK_API_BASE }} \
             --memory 1Gi \
             --cpu 2 \
             --timeout 300 \
@@ -404,7 +438,7 @@ jobs:
             -d '{
               "msg_type": "text",
               "content": {
-                "text": "✅ DeepSeek Chat Agent - 构建和部署成功完成！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 批准人: ${{ github.actor }}\n- 部署时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n服务信息：\n- 服务名称: ${{ env.SERVICE_NAME }}\n- 区域: ${{ env.REGION }}\n- Gradio UI: ${{ steps.service_url.outputs.service_url }}\n\n镜像信息：\n- GCR 镜像: ${{ needs.build.outputs.image_gcr }}\n- Artifactory 镜像: ${{ needs.build.outputs.image_artifactory }}\n\n查看服务：\nhttps://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}\n\n此通知由 GitHub Actions 自动发送。"
+                "text": "✅ DeepSeek Chat Agent - 构建和部署成功完成！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 批准人: ${{ github.actor }}\n- 部署时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n服务信息：\n- 服务名称: ${{ env.SERVICE_NAME }}\n- 区域: ${{ env.REGION }}\n- Gradio UI: ${{ steps.service_url.outputs.service_url }}\n\n镜像信息：\n- GCR 镜像: ${{ needs.build.outputs.image_gcr }}\n\n查看服务：\nhttps://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}\n\n此通知由 GitHub Actions 自动发送。"
               }
             }'
 

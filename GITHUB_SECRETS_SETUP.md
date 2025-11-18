@@ -65,6 +65,7 @@ Settings → Secrets and variables → Actions → New repository secret
    - Cloud Run Admin
    - Service Account User
    - Storage Admin（用于推送镜像到 GCR）
+   - Artifact Registry Writer（如果使用 Artifact Registry）
 
 3. **创建密钥：**
    ```bash
@@ -141,73 +142,64 @@ https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxxxxxxxxxx
 
 ---
 
-## 🔧 可选的 Secrets（Artifactory）
+### 5. `DEEPSEEK_API_BASE` ⚪ 可选
 
-以下 Secrets 是**可选的**，只有在需要将镜像推送到 Artifactory 时才需要配置：
-
-### 5. `ARTIFACTORY_URL` ⚪ 可选
-
-**说明：** Artifactory 服务器 URL
+**说明：** DeepSeek API Base URL
 
 **类型：** URL 字符串
 
+**默认值：** `https://api.deepseek.com/v1`
+
 **示例值：**
 ```
-https://your-company.jfrog.io
+https://api.deepseek.com/v1
 ```
 
-**默认行为：**
-- 如果未配置，工作流会跳过推送到 Artifactory 的步骤
+**何时需要配置：**
+- 使用 DeepSeek 官方 API：**不需要配置**（使用默认值）
+- 使用代理或自定义端点：需要配置
+
+**注意：**
+- 如果未配置，会自动使用默认值 `https://api.deepseek.com/v1`
+- 大多数情况下不需要配置此 Secret
+
+---
+
+## 🔧 可选的 Secrets（Google Artifact Registry）
+
+以下 Secret 是**可选的**，只有在需要将镜像推送到 Google Artifact Registry 时才需要配置：
+
+### 6. `ARTIFACTORY_URL` ⚪ 可选（用于 Google Artifact Registry）
+
+**说明：** Google Artifact Registry URL（注意：Secret 名称保持为 `ARTIFACTORY_URL` 以保持兼容性）
+
+**类型：** 字符串（不包含 `https://`）
+
+**示例值：**
+```
+asia-east1-docker.pkg.dev/firbase-app1-17308/smartage
+```
+
+**格式说明：**
+```
+REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY_NAME
+```
+
+**获取方式：**
+1. 登录 [Google Cloud Console](https://console.cloud.google.com/)
+2. 导航到 Artifact Registry
+3. 选择你的仓库
+4. 复制仓库路径（不包含镜像名称）
+
+**用途：**
+- 推送 Docker 镜像到 Google Artifact Registry
+- 作为镜像仓库的备用存储
+
+**注意：**
+- 如果未配置，工作流会跳过推送到 Artifact Registry 的步骤
 - 不会影响构建和部署到 Cloud Run
-
----
-
-### 6. `ARTIFACTORY_REPO` ⚪ 可选
-
-**说明：** Artifactory Docker 仓库名称
-
-**类型：** 字符串
-
-**示例值：**
-```
-docker-local
-```
-
-**默认值：**
-- 如果未配置，默认使用 `docker-local`
-
----
-
-### 7. `ARTIFACTORY_USER` ⚪ 可选
-
-**说明：** Artifactory 用户名
-
-**类型：** 字符串
-
-**示例值：**
-```
-my-artifactory-user
-```
-
-**注意：**
-- 如果配置了 `ARTIFACTORY_URL`，建议同时配置用户名和密码
-
----
-
-### 8. `ARTIFACTORY_PASSWORD` ⚪ 可选
-
-**说明：** Artifactory 密码或 API Key
-
-**类型：** 字符串（敏感信息）
-
-**示例值：**
-```
-your-artifactory-password-or-api-key
-```
-
-**注意：**
-- 可以是密码或 API Key
-- 建议使用 API Key 而不是密码
+- **不需要配置用户名和密码**，使用 Google Cloud 服务账号认证
+- 服务账号需要有 Artifact Registry Writer 权限
 
 ---
 
@@ -252,11 +244,9 @@ gh secret set LARK_WEBHOOK_URL --body "https://open.feishu.cn/open-apis/bot/v2/h
 - [ ] `DEEPSEEK_API_KEY` - DeepSeek API 密钥
 - [ ] `LARK_WEBHOOK_URL` - Lark Webhook URL（可选，但建议配置）
 
-**可选配置（如果需要 Artifactory）：**
-- [ ] `ARTIFACTORY_URL` - Artifactory URL
-- [ ] `ARTIFACTORY_REPO` - Artifactory 仓库名称
-- [ ] `ARTIFACTORY_USER` - Artifactory 用户名
-- [ ] `ARTIFACTORY_PASSWORD` - Artifactory 密码
+**可选配置：**
+- [ ] `DEEPSEEK_API_BASE` - DeepSeek API Base URL（可选，默认使用官方 API）
+- [ ] `ARTIFACTORY_URL` - Google Artifact Registry URL（可选，例如：asia-east1-docker.pkg.dev/project-id/repo-name）
 
 ---
 
@@ -339,18 +329,21 @@ Secrets:
   LARK_WEBHOOK_URL: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx"
 ```
 
-### 完整配置（包含 Artifactory）
+### 完整配置（包含所有可选项）
 
 ```yaml
 Secrets:
+  # 必需
   GCP_PROJECT_ID: "your-project-id"
   GCP_SA_KEY: "{...JSON内容...}"
   DEEPSEEK_API_KEY: "sk-xxxxxxxx"
   LARK_WEBHOOK_URL: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx"
-  ARTIFACTORY_URL: "https://your-company.jfrog.io"
-  ARTIFACTORY_REPO: "docker-local"
-  ARTIFACTORY_USER: "your-username"
-  ARTIFACTORY_PASSWORD: "your-password"
+  
+  # 可选 - DeepSeek API
+  DEEPSEEK_API_BASE: "https://api.deepseek.com/v1"  # 通常不需要，使用默认值即可
+  
+  # 可选 - Google Artifact Registry
+  ARTIFACTORY_URL: "asia-east1-docker.pkg.dev/project-id/repository-name"  # 不需要用户名和密码
 ```
 
 ---
