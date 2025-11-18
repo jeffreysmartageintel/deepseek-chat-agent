@@ -1,0 +1,19 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+# langchain 0.1.0 与 langchain-community 0.4.1 不兼容
+# 使用 langchain-classic 和 langchain-community 替代
+langchain-classic==1.0.0
+langchain-community==0.4.1
+langchain-deepseek>=0.1.0
+# langchain-deepseek 的依赖（会自动安装，但显式声明以便版本控制）
+langchain-openai>=0.1.0  # langchain-deepseek 依赖此包
+openai>=1.0.0  # langchain-openai 依赖此包
+# pydantic 需要 >=2.7.4 以满足 langchain-classic 的要求
+# 同时需要 <3.0.0 以满足 fastapi 的要求
+pydantic>=2.7.4,<3.0.0
+python-dotenv==1.0.0
+httpx==0.25.2
+# Gradio UI 依赖
+gradio>=4.0.0
+requests>=2.31.0
+

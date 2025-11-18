@@ -1,0 +1,892 @@
+name: "Flutter Build & Deploy to Firebase App Distribution"
+
+# 工作流变量配置 - 可以在文件顶部修改这些变量
+env:
+  # Lark 通知配置变量
+  LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }} # Lark Webhook URL（需要在 GitHub Secrets 中配置）
+
+  # Firebase 配置变量
+  FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+  FIREBASE_GROUPS: "testers" # Firebase App Distribution 测试组
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }} # Firebase 项目 ID（用于 Test Lab）
+
+  # Test Lab 配置变量
+  TEST_DEVICE_MODEL: "Pixel3" # 测试设备型号（可修改：Pixel2, Pixel3, Pixel4 等）
+  TEST_DEVICE_VERSION: "29" # Android 版本（可修改：28=Android 9, 29=Android 10 等）
+  TEST_LOCALE: "zh_HK" # 测试语言环境（可修改：zh_HK, en_US 等）
+  TEST_ORIENTATION: "portrait" # 屏幕方向：portrait 或 landscape
+
+  # 构建配置变量
+  FLUTTER_VERSION: "3.35.6"
+  JAVA_VERSION: "17"
+  CHECK_TIME_BJ: "20:30" # 检查 push 的时间点（北京时间 20:30）
+
+on:
+  schedule:
+    # 每天 UTC 12:30 执行（对应香港时间 20:30）
+    - cron: "30 12 * * *" # UTC 时间 12:30 = 香港时间 20:30
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "强制构建（跳过 push 检查）"
+        required: false
+        default: false
+        type: boolean
+      approve_deployment:
+        description: "批准部署到 Firebase（仅在构建完成后使用）"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  check-push:
+    name: "检查是否有代码 Push"
+    runs-on: ubuntu-latest
+    outputs:
+      has_push: ${{ steps.check.outputs.has_push }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史记录
+
+      - name: 检查今天 00:00-20:30（北京时间）之间是否有 Push
+        id: check
+        run: |
+          # 获取当前时间（UTC）
+          CURRENT_DATE_UTC=$(date -u +%Y-%m-%d)
+          CURRENT_TIME_UTC=$(date -u +%H:%M)
+          CHECK_TIME_BJ="${{ env.CHECK_TIME_BJ }}"  # 北京时间 20:30
+
+          # 计算北京时间的当前日期和时间
+          CURRENT_DATE_BJ=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
+          CURRENT_TIME_BJ=$(TZ='Asia/Shanghai' date +%H:%M)
+
+          echo "=========================================="
+          echo "Push 检查信息"
+          echo "=========================================="
+          echo "当前 UTC 时间: $CURRENT_DATE_UTC $CURRENT_TIME_UTC"
+          echo "当前北京时间: $CURRENT_DATE_BJ $CURRENT_TIME_BJ"
+          echo "检查时间点 (北京时间): $CHECK_TIME_BJ"
+          echo "Workflow 触发方式: ${{ github.event_name }}"
+          echo "强制构建参数: ${{ github.event.inputs.force_build }}"
+          echo ""
+
+          # 如果是手动触发且勾选了批准部署，跳过 push 检查（这是用于批准部署的）
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.approve_deployment }}" == "true" ]; then
+            echo "=========================================="
+            echo "手动批准部署触发"
+            echo "=========================================="
+            echo "✅ 这是手动批准部署的触发，跳过 push 检查"
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 如果是手动触发但未勾选批准，检查是否是强制构建
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_build }}" == "true" ]; then
+            echo "=========================================="
+            echo "强制构建触发"
+            echo "=========================================="
+            echo "✅ 强制构建已启用，跳过时间检查"
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 如果是定时任务，检查时间范围
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "=========================================="
+            echo "非定时任务触发"
+            echo "=========================================="
+            echo "⚠️ 只有定时任务（20:30 HK 时间）才会自动检查 push"
+            echo "has_push=false" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 计算检查时间范围（北京时间今天 00:00 到 20:30）
+          # 北京时间 00:00 = UTC 前一天 16:00
+          # 北京时间 20:30 = UTC 当天 12:30
+
+          # 获取北京时间今天的开始时间（UTC 前一天 16:00）
+          BJ_TODAY_START_UTC=$(date -u -d "yesterday 16:00" +%Y-%m-%dT%H:%M:%SZ)
+
+          # 获取北京时间今天的结束时间（UTC 当天 12:30）
+          # 将北京时间 20:30 转换为 UTC 时间（减去 8 小时）
+          CHECK_HOUR_BJ=$(echo $CHECK_TIME_BJ | cut -d':' -f1)
+          CHECK_MINUTE_BJ=$(echo $CHECK_TIME_BJ | cut -d':' -f2)
+
+          # 计算 UTC 时间（北京时间 - 8小时）
+          if [ $CHECK_HOUR_BJ -ge 8 ]; then
+            # 如果北京时间 >= 08:00，UTC 时间是同一天
+            CHECK_HOUR_UTC=$((CHECK_HOUR_BJ - 8))
+            CHECK_DATE_UTC="$CURRENT_DATE_UTC"
+          else
+            # 如果北京时间 < 08:00，UTC 时间是前一天
+            CHECK_HOUR_UTC=$((CHECK_HOUR_BJ + 16))
+            CHECK_DATE_UTC=$(date -u -d "yesterday" +%Y-%m-%d)
+          fi
+
+          # 格式化 UTC 时间
+          CHECK_TIME_UTC=$(printf "%02d:%02d" $CHECK_HOUR_UTC $CHECK_MINUTE_BJ)
+          BJ_TODAY_END_UTC="${CHECK_DATE_UTC}T${CHECK_TIME_UTC}:00Z"
+
+          echo "检查时间范围 (UTC): $BJ_TODAY_START_UTC 到 $BJ_TODAY_END_UTC"
+          echo "检查时间范围 (北京时间): 今天 00:00 到 $CHECK_TIME_BJ"
+          echo ""
+
+          # 显示所有今天的 commit（用于调试）
+          echo "今天所有的 commit (UTC 时间):"
+          git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          # 显示最近 10 个 commit（用于调试）
+          echo "最近 10 个 commit:"
+          git log -10 --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          # 检查指定时间范围内是否有 commit
+          COMMITS=$(git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline | wc -l)
+
+          # 显示该时间范围内的 commit（用于调试）
+          echo "时间范围内 ($BJ_TODAY_START_UTC 到 $BJ_TODAY_END_UTC) 的 commit:"
+          git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          echo "=========================================="
+          echo "检查结果"
+          echo "=========================================="
+          echo "Commit 数量: $COMMITS"
+          echo ""
+
+          # 判断是否执行构建
+          if [ "$COMMITS" -gt 0 ]; then
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "✅ 发现 $COMMITS 个 commit，将执行构建"
+          else
+            echo "has_push=false" >> $GITHUB_OUTPUT
+            echo "❌ 没有发现 commit，跳过构建"
+          fi
+          echo "=========================================="
+
+  send-no-push-email:
+    name: "发送无 Push 通知到 Lark"
+    runs-on: ubuntu-latest
+    needs: check-push
+    if: needs.check-push.outputs.has_push == 'false'
+    steps:
+      - name: 发送 Lark 通知
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "📭 SmartAge App - 今日无需构建\n\n由于今天 20:30（北京时间）之前没有代码 push 到仓库，今天不需要构建代码。\n\n日期: $(date +'%Y-%m-%d')\n时间: $(date +'%H:%M:%S')\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+  build:
+    name: "构建和测试"
+    runs-on: ubuntu-latest
+    needs: check-push
+    if: |
+      needs.check-push.outputs.has_push == 'true' || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.approve_deployment == 'true')
+    outputs:
+      robo_test_status: ${{ steps.robo_test.outputs.robo_test_status }}
+      build_run_id: ${{ github.run_id }}
+      build_sha: ${{ github.sha }}
+      app_version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 检查构建完成标记（批准部署模式）
+        id: check_build_flag
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.approve_deployment == 'true'
+        run: |
+          # 初始化默认值
+          echo "build_ready=0" >> $GITHUB_OUTPUT
+          echo "artifact_found=false" >> $GITHUB_OUTPUT
+          echo "==== 检查构建完成标记 ===="
+          echo "查找最近的构建完成标记..."
+
+          # 安装 GitHub CLI（如果未安装）
+          if ! command -v gh &> /dev/null; then
+            echo "安装 GitHub CLI..."
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install gh -y
+          fi
+
+          # 设置 GitHub token
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+          # 查找最近的成功构建运行（排除当前运行）
+          echo "查找最近的成功构建运行..."
+          LATEST_RUN=$(gh run list --workflow=flutter_firebase_deploy.yml --status=success --limit=10 --json databaseId,conclusion,createdAt --jq '.[] | select(.databaseId != '${{ github.run_id }}') | .databaseId' | head -n 1)
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "build_ready=0" >> $GITHUB_OUTPUT
+            echo "artifact_found=false" >> $GITHUB_OUTPUT
+            echo "❌ 未找到最近的构建运行，将从头开始构建"
+            exit 0
+          fi
+
+          echo "找到运行 ID: $LATEST_RUN"
+
+          # 检查该运行是否有 build-ready-flag artifact（标记构建已完成）
+          FLAG_EXISTS=$(gh run view $LATEST_RUN --json artifacts --jq '.artifacts[] | select(.name == "build-ready-flag") | .name' || echo "")
+
+          if [ -z "$FLAG_EXISTS" ]; then
+            echo "build_ready=0" >> $GITHUB_OUTPUT
+            echo "artifact_found=false" >> $GITHUB_OUTPUT
+            echo "❌ 运行 $LATEST_RUN 没有构建完成标记，将从头开始构建"
+            exit 0
+          fi
+
+          echo "✅ 找到构建完成标记，构建已完成"
+
+          # 检查该运行是否有 release-apk artifact
+          APK_EXISTS=$(gh run view $LATEST_RUN --json artifacts --jq '.artifacts[] | select(.name == "release-apk") | .name' || echo "")
+
+          if [ -z "$APK_EXISTS" ]; then
+            echo "build_ready=0" >> $GITHUB_OUTPUT
+            echo "artifact_found=false" >> $GITHUB_OUTPUT
+            echo "❌ 运行 $LATEST_RUN 没有 APK artifact，将从头开始构建"
+            exit 0
+          fi
+
+          # 下载构建标记文件（查看构建信息）
+          echo "下载构建标记文件..."
+          mkdir -p .build-info
+          if gh run download $LATEST_RUN -n build-ready-flag -D .build-info 2>/dev/null; then
+            echo "构建信息："
+            cat .build-info/build-ready.flag || true
+          fi
+
+          # 下载 APK artifact
+          echo "下载 APK artifact..."
+          mkdir -p build/app/outputs/flutter-apk
+          if gh run download $LATEST_RUN -n release-apk -D build/app/outputs/flutter-apk; then
+            echo "build_ready=1" >> $GITHUB_OUTPUT
+            echo "artifact_found=true" >> $GITHUB_OUTPUT
+            echo "artifact_run_id=$LATEST_RUN" >> $GITHUB_OUTPUT
+            echo "✅ 构建已完成（标记=1），成功下载 APK，将跳过构建步骤"
+            
+            # 列出下载的文件
+            echo "下载的文件："
+            ls -lh build/app/outputs/flutter-apk/ || true
+          else
+            echo "build_ready=0" >> $GITHUB_OUTPUT
+            echo "artifact_found=false" >> $GITHUB_OUTPUT
+            echo "❌ 下载 APK artifact 失败，将从头开始构建"
+          fi
+
+      - name: Cache Flutter/Dart pub packages
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Setup Java
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Flutter
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter pub get
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        run: flutter pub get
+
+      - name: 获取应用版本号
+        id: get_version
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2)
+          else
+            # 如果使用之前的 artifact，尝试从 APK 文件名获取版本信息
+            VERSION="unknown"
+            if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+              echo "使用之前的构建产物，版本信息可能不准确"
+            fi
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "应用版本: $VERSION"
+
+      - name: Flutter analyze
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Decode and setup keystore
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/smartage-nurseai-app.jks
+          echo "${{ secrets.KEY_PROPERTIES }}" > android/key.properties
+
+      - name: Build APK
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        run: |
+          flutter build apk --release
+
+      - name: 确认 APK 文件存在
+        run: |
+          if [ ! -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            echo "❌ APK 文件不存在"
+            exit 1
+          fi
+          echo "✅ APK 文件已准备就绪"
+          ls -lh build/app/outputs/flutter-apk/app-release.apk
+
+      - name: 创建构建完成标记
+        run: |
+          echo "构建完成时间: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" > build-ready.flag
+          echo "运行 ID: ${{ github.run_id }}" >> build-ready.flag
+          echo "Commit: ${{ github.sha }}" >> build-ready.flag
+          echo "版本: ${{ steps.get_version.outputs.version }}" >> build-ready.flag
+          cat build-ready.flag
+
+      - name: 上传 APK 文件（供部署使用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 1
+
+      - name: 上传构建完成标记
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-ready-flag
+          path: build-ready.flag
+          retention-days: 1
+
+      - name: 安装 Google Cloud SDK
+        if: steps.check_build_flag.outputs.build_ready != '1'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          service_account_key: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          project_id: ${{ env.FIREBASE_PROJECT_ID }}
+          export_default_credentials: true
+
+      - name: 运行 Firebase Test Lab - Random Crawl Test
+        id: robo_test
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          # 初始化默认值，确保总是有输出
+          echo "robo_test_status=passed" >> $GITHUB_OUTPUT
+
+          if [ "${{ steps.check_build_flag.outputs.build_ready || '0' }}" == "1" ]; then
+            echo "robo_test_status=skipped" >> $GITHUB_OUTPUT
+            echo "⏭️  使用之前的构建产物，跳过 Test Lab 测试"
+          else
+            APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+
+            if [ ! -f "$APK_PATH" ]; then
+              echo "❌ APK not found at $APK_PATH"
+              exit 1
+            fi
+
+            echo "🤖 开始 Firebase Test Lab - Random Crawl Test..."
+            echo "设备型号: ${{ env.TEST_DEVICE_MODEL }}"
+            echo "Android 版本: ${{ env.TEST_DEVICE_VERSION }}"
+            echo "语言环境: ${{ env.TEST_LOCALE }}"
+            echo "屏幕方向: ${{ env.TEST_ORIENTATION }}"
+
+            # 设置服务账号认证
+            echo ""
+            echo "==== 设置 gcloud 认证 ===="
+            if [ -z "$FIREBASE_SA_JSON" ]; then
+              echo "❌ FIREBASE_SERVICE_ACCOUNT_JSON 未设置"
+              exit 1
+            fi
+
+            # 创建临时服务账号文件
+            SA_FILE="${GITHUB_WORKSPACE}/gcloud_service_account.json"
+            echo "$FIREBASE_SA_JSON" > "$SA_FILE"
+            chmod 600 "$SA_FILE"
+
+            # 验证 JSON 格式
+            python3 -m json.tool "$SA_FILE" > /dev/null || {
+              echo "❌ JSON 格式无效"
+              exit 1
+            }
+
+            # 从 JSON 中提取 client_email
+            CLIENT_EMAIL=$(python3 -c "import json; print(json.load(open('$SA_FILE'))['client_email'])")
+
+            # 激活服务账号
+            gcloud auth activate-service-account "$CLIENT_EMAIL" --key-file="$SA_FILE" || {
+              echo "❌ 激活服务账号失败"
+              exit 1
+            }
+
+            # 设置项目
+            gcloud config set project "${{ env.FIREBASE_PROJECT_ID }}" || {
+              echo "❌ 设置项目失败"
+              exit 1
+            }
+
+            # 验证认证
+            echo ""
+            echo "==== 验证 gcloud 认证 ===="
+            ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)" || echo "")
+            if [ -z "$ACTIVE_ACCOUNT" ]; then
+              echo "❌ 没有活动的 gcloud 账户"
+              exit 1
+            fi
+            echo "✅ gcloud 认证成功"
+            echo "活动账户: $ACTIVE_ACCOUNT"
+            echo "项目: $(gcloud config get-value project)"
+
+            # 检查 Cloud Testing API 是否启用
+            echo ""
+            echo "==== 检查 Cloud Testing API ===="
+            if ! gcloud services list --enabled --filter="name:testing.googleapis.com" --format="value(name)" | grep -q "testing.googleapis.com"; then
+              echo "⚠️  Cloud Testing API 未启用，尝试启用..."
+              gcloud services enable testing.googleapis.com --project="${{ env.FIREBASE_PROJECT_ID }}" || {
+                echo "❌ 无法启用 Cloud Testing API，请手动在 Google Cloud Console 中启用"
+                echo "   链接: https://console.cloud.google.com/apis/library/testing.googleapis.com?project=${{ env.FIREBASE_PROJECT_ID }}"
+              }
+            else
+              echo "✅ Cloud Testing API 已启用"
+            fi
+
+            # 检查存储权限（Firebase Test Lab 需要上传 APK 到 GCS）
+            echo ""
+            echo "==== 检查存储权限 ===="
+            echo "Firebase Test Lab 需要将 APK 上传到 Google Cloud Storage"
+            echo "服务账号: $CLIENT_EMAIL"
+            echo "项目: ${{ env.FIREBASE_PROJECT_ID }}"
+            
+            # 尝试列出存储桶（测试存储权限）
+            if gcloud storage buckets list --project="${{ env.FIREBASE_PROJECT_ID }}" --limit=1 > /dev/null 2>&1; then
+              echo "✅ 存储权限检查通过"
+            else
+              echo "⚠️  无法验证存储权限（这可能是正常的，继续执行）"
+            fi
+
+            # 运行 Robo Test (Random Crawl) - 自动探索 UI
+            echo ""
+            echo "==== 开始运行 Test Lab ===="
+            
+            # 捕获命令输出用于错误分析
+            TEST_OUTPUT=$(gcloud firebase test android run \
+              --app "$APK_PATH" \
+              --type robo \
+              --device model=${{ env.TEST_DEVICE_MODEL }},version=${{ env.TEST_DEVICE_VERSION }},locale=${{ env.TEST_LOCALE }},orientation=${{ env.TEST_ORIENTATION }} \
+              --project ${{ env.FIREBASE_PROJECT_ID }} \
+              --timeout 15m \
+              --robo-directives "click_on_text=Login" \
+              --robo-directives "click_on_text=Sign In" 2>&1)
+            TEST_EXIT_CODE=$?
+            
+            # 显示输出
+            echo "$TEST_OUTPUT"
+            
+            if [ $TEST_EXIT_CODE -eq 0 ]; then
+              echo "robo_test_status=passed" >> $GITHUB_OUTPUT
+              echo "✅ Random Crawl Test 通过"
+            else
+              echo "robo_test_status=failed" >> $GITHUB_OUTPUT
+              echo ""
+              echo "❌ Random Crawl Test 失败 (退出码: $TEST_EXIT_CODE)"
+              echo ""
+              echo "=========================================="
+              echo "权限错误解决方案"
+              echo "=========================================="
+              
+              # 检查是否是存储权限错误
+              if echo "$TEST_OUTPUT" | grep -qi "storage.objects.create\|storage\.objects\|does not have.*storage.*access\|Permission.*storage.*denied"; then
+                echo "🔍 检测到存储权限错误"
+                echo ""
+                echo "Firebase Test Lab 需要将 APK 上传到 Google Cloud Storage"
+                echo "服务账号需要以下存储相关权限："
+                echo ""
+                echo "📋 解决方案（按优先级）："
+                echo ""
+                echo "方案 1（推荐）：添加 Storage Admin 角色"
+                echo "1. 访问 IAM 页面："
+                echo "   https://console.cloud.google.com/iam-admin/iam?project=${{ env.FIREBASE_PROJECT_ID }}"
+                echo ""
+                echo "2. 找到服务账号: $CLIENT_EMAIL"
+                echo ""
+                echo "3. 点击编辑（铅笔图标），添加以下角色："
+                echo "   ✅ Storage Admin（推荐，包含所有存储权限）"
+                echo "   ✅ Firebase Quality Admin（必需，用于 Test Lab）"
+                echo "   ✅ Service Account User（必需）"
+                echo ""
+                echo "4. 保存并等待 1-2 分钟让权限生效"
+                echo ""
+                echo "方案 2：如果方案 1 不行，添加更广泛的权限"
+                echo "   ✅ Storage Admin"
+                echo "   ✅ Firebase Admin（完整的 Firebase 权限）"
+                echo "   ✅ Service Account User"
+                echo ""
+                echo "方案 3：直接授予存储桶权限（如果知道存储桶名称）"
+                echo "   存储桶名称通常类似：test-lab-xxxxx-xxxxx"
+                echo "   可以在错误信息中找到存储桶路径"
+                echo ""
+              else
+                echo "如果看到 '403: Not authorized' 错误，请按以下步骤操作："
+                echo ""
+                echo "1. 访问 Google Cloud Console IAM 页面："
+                echo "   https://console.cloud.google.com/iam-admin/iam?project=${{ env.FIREBASE_PROJECT_ID }}"
+                echo ""
+                echo "2. 找到服务账号: $CLIENT_EMAIL"
+                echo ""
+                echo "3. 点击编辑（铅笔图标），添加以下角色："
+                echo "   - Firebase Quality Admin（必需）"
+                echo "   - Storage Admin（用于上传 APK 到 GCS）"
+                echo "   - Firebase Admin（如果找不到其他角色，使用这个）"
+                echo "   - Service Account User（必需）"
+                echo ""
+                echo "   注意：如果找不到 'Cloud Testing Service Agent'，可以跳过，"
+                echo "   使用 'Firebase Admin' 或 'Firebase Quality Admin' 即可"
+                echo ""
+              fi
+              
+              echo "4. 启用 Cloud Testing API："
+              echo "   https://console.cloud.google.com/apis/library/testing.googleapis.com?project=${{ env.FIREBASE_PROJECT_ID }}"
+              echo ""
+              echo "5. 等待 1-2 分钟后重试"
+              echo ""
+              echo "💡 提示："
+              echo "   - Storage Object Admin 可能不够，建议使用 Storage Admin"
+              echo "   - 权限更改需要 1-2 分钟才能生效"
+              echo "   - 如果问题持续，检查服务账号是否有项目级别的权限"
+              echo "=========================================="
+              # 不退出，允许工作流继续，但标记为失败
+            fi
+
+            # 清理临时文件
+            rm -f "$SA_FILE"
+          fi
+
+      - name: 发送测试失败通知到 Lark
+        if: steps.robo_test.outputs.robo_test_status == 'failed'
+        run: |
+          VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2)
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"⚠️ SmartAge App - 测试失败\\n\\n测试结果：\\n- Firebase Test Lab - Random Crawl Test: ${{ steps.robo_test.outputs.robo_test_status || 'unknown' }}\\n\\n测试信息：\\n- 设备型号: ${{ env.TEST_DEVICE_MODEL }}\\n- Android 版本: ${{ env.TEST_DEVICE_VERSION }}\\n- 语言环境: ${{ env.TEST_LOCALE }}\\n- 版本: $VERSION\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 测试时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n请查看 Firebase Console > Test Lab 获取详细测试报告：\\nhttps://console.firebase.google.com/project/${{ env.FIREBASE_PROJECT_ID }}/testlab/histories\\n\\n请查看 GitHub Actions 日志获取详细信息：\\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+      - name: 发送构建成功等待批准通知到 Lark
+        if: success()
+        run: |
+          VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2)
+          TEST_STATUS="${{ steps.robo_test.outputs.robo_test_status || 'unknown' }}"
+          if [ "$TEST_STATUS" == "failed" ]; then
+            TEST_MSG="⚠️ Firebase Test Lab - Random Crawl Test: 失败（但可手动批准部署）"
+          else
+            TEST_MSG="✅ Firebase Test Lab - Random Crawl Test: $TEST_STATUS"
+          fi
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"✅ SmartAge App - 构建成功，等待部署批准\\n\\n构建信息：\\n- 版本: $VERSION\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n测试结果：\\n- $TEST_MSG\\n\\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\\n1. 前往当前工作流运行页面：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n2. 找到 '部署到 Firebase App Distribution（需要批准）' job\\n3. 点击 'Review deployments' 按钮\\n4. 点击 'Approve and deploy' 按钮批准部署\\n\\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\\n\\n工作流运行 ID: ${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+      - name: 发送构建失败通知到 Lark
+        if: failure()
+        run: |
+          VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2 || echo "unknown")
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"❌ SmartAge App - 构建失败！\\n\\n构建信息：\\n- 版本: $VERSION\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n请查看 GitHub Actions 日志获取详细错误信息：\\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+  check-deployment-approval:
+    name: "检查部署批准状态"
+    runs-on: ubuntu-latest
+    needs: build
+    if: |
+      needs.build.result == 'success'
+    outputs:
+      is_approved: ${{ steps.check.outputs.is_approved }}
+      approver: ${{ steps.check.outputs.approver }}
+    steps:
+      - name: 检查部署批准状态
+        id: check
+        run: |
+          echo "=========================================="
+          echo "部署批准检查"
+          echo "=========================================="
+          echo "触发事件: ${{ github.event_name }}"
+          echo "触发者: ${{ github.actor }}"
+          echo "批准部署参数: ${{ github.event.inputs.approve_deployment }}"
+          echo ""
+
+          # 检查是否是手动触发且勾选了批准选项
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.approve_deployment }}" == "true" ]; then
+            echo "is_approved=true" >> $GITHUB_OUTPUT
+            echo "approver=${{ github.actor }}" >> $GITHUB_OUTPUT
+            echo "✅ 部署已获得批准"
+            echo "批准人: ${{ github.actor }}"
+            
+            # 检查测试状态并给出警告
+            if [ "${{ needs.build.outputs.robo_test_status }}" == "failed" ]; then
+              echo ""
+              echo "⚠️  警告：测试失败，但已批准部署，将继续执行"
+            fi
+          else
+            echo "is_approved=false" >> $GITHUB_OUTPUT
+            echo "approver=" >> $GITHUB_OUTPUT
+            if [ "${{ github.event_name }}" == "schedule" ]; then
+              echo "⏳ 定时任务触发，等待手动批准部署"
+              echo ""
+              echo "📋 下一步操作："
+              echo "1. 前往工作流页面："
+              echo "   ${{ github.server_url }}/${{ github.repository }}/actions/workflows/flutter_firebase_deploy.yml"
+              echo "2. 点击右上角 'Run workflow' 按钮"
+              echo "3. 勾选 '批准部署到 Firebase (approve_deployment)' 选项"
+              echo "4. 点击绿色的 'Run workflow' 按钮"
+              echo ""
+              echo "ℹ️  注意：部署 job 将被跳过，直到手动批准"
+            elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+              echo "⏳ 手动触发构建，但未勾选部署批准"
+              echo "提示: 如需部署，请重新触发工作流并勾选 '批准部署到 Firebase (approve_deployment)' 选项"
+            else
+              echo "❌ 部署未获得批准"
+            fi
+          fi
+          echo "=========================================="
+          echo "✅ 批准检查完成"
+
+      - name: 发送检查失败通知到 Lark
+        if: failure()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"❌ SmartAge App - 检查部署批准状态失败！\\n\\n失败信息：\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n请查看 GitHub Actions 日志获取详细错误信息：\\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+  notify-pending-approval:
+    name: "通知等待部署批准"
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.result == 'success'
+    steps:
+      - name: 发送等待批准通知到 Lark
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"⏳ SmartAge App - 构建成功，等待部署批准\\n\\n构建信息：\\n- 版本: ${{ needs.build.outputs.app_version || 'unknown' }}\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n测试结果：\\n- Firebase Test Lab - Random Crawl Test: ${{ needs.build.outputs.robo_test_status || 'unknown' }}\\n\\n📋 批准部署步骤（GitHub Environment 审批）：\\n\\n1️⃣ 前往当前工作流运行页面\\n   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n\\n2️⃣ 找到 '部署到 Firebase App Distribution（需要批准）' job\\n\\n3️⃣ 点击 'Review deployments' 按钮\\n\\n4️⃣ 点击 'Approve and deploy' 按钮批准部署\\n\\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\\n\\n工作流运行 ID: ${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+  deploy-to-firebase:
+    name: "部署到 Firebase App Distribution（需要批准）"
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: needs.build.result == 'success'
+    environment:
+      name: firebase-production
+      url: https://console.firebase.google.com/project/${{ env.FIREBASE_PROJECT_ID }}/appdistribution
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 显示批准信息
+        run: |
+          echo "=========================================="
+          echo "部署批准信息"
+          echo "=========================================="
+          echo "✅ 部署已通过 GitHub Environment 审批"
+          echo "审批人: ${{ github.actor }}"
+          echo "触发者: ${{ github.actor }}"
+          echo "触发事件: ${{ github.event_name }}"
+          echo "测试状态: ${{ needs.build.outputs.robo_test_status || 'unknown' }}"
+          if [ "${{ needs.build.outputs.robo_test_status }}" == "failed" ]; then
+            echo "⚠️  警告：测试失败，但已批准部署，将继续执行"
+          fi
+          echo "=========================================="
+
+      - name: 下载 APK 文件
+        uses: actions/download-artifact@v4
+        with:
+          name: release-apk
+          path: build/app/outputs/flutter-apk/
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools@latest
+
+      - name: Write Firebase service account key
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$FIREBASE_SA_JSON" ]; then
+            echo "❌ FIREBASE_SERVICE_ACCOUNT_JSON is not set"
+            echo "请在 GitHub Secrets 中添加 FIREBASE_SERVICE_ACCOUNT_JSON"
+            exit 1
+          fi
+          echo "$FIREBASE_SA_JSON" > "${GITHUB_WORKSPACE}/firebase_service_account.json"
+          chmod 600 "${GITHUB_WORKSPACE}/firebase_service_account.json"
+          echo "✅ Firebase service account key written"
+
+          # 验证 JSON 格式
+          python3 -m json.tool "${GITHUB_WORKSPACE}/firebase_service_account.json" > /dev/null || {
+            echo "❌ JSON 格式无效"
+            exit 1
+          }
+          echo "✅ JSON 格式验证通过"
+
+      - name: 部署到 Firebase App Distribution（使用 Firebase CLI）
+        id: deploy_firebase
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_service_account.json
+          FIREBASE_APP_ID: ${{ env.FIREBASE_APP_ID }}
+          FIREBASE_PROJECT_ID: ${{ env.FIREBASE_PROJECT_ID }}
+        run: |
+          set -e
+
+          APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+
+          echo "==== 检查 APK 文件 ===="
+          if [ ! -f "$APK_PATH" ]; then
+            echo "❌ APK not found at $APK_PATH"
+            echo "Available files:"
+            ls -la build/app/outputs/flutter-apk || true
+            exit 1
+          fi
+
+          echo "✅ APK found: $APK_PATH"
+          ls -lh "$APK_PATH"
+
+          echo ""
+          echo "==== 检查环境变量 ===="
+          echo "GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS"
+          echo "FIREBASE_APP_ID: $FIREBASE_APP_ID"
+          echo "FIREBASE_PROJECT_ID: $FIREBASE_PROJECT_ID"
+
+          if [ -z "$FIREBASE_APP_ID" ]; then
+            echo "❌ FIREBASE_APP_ID is not set"
+            echo "请在 GitHub Secrets 中添加 FIREBASE_APP_ID"
+            exit 1
+          fi
+
+          echo ""
+          echo "==== Firebase CLI 版本 ===="
+          firebase --version
+
+          # 获取版本信息
+          VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2)
+
+          echo ""
+          echo "==== 版本信息 ===="
+          echo "版本: $VERSION"
+          echo "Commit: ${{ github.sha }}"
+          echo "批准人: ${{ github.actor }}"
+
+          # 获取提交信息（如果可用）
+          COMMIT_MESSAGE="N/A"
+          if [ -n "${{ github.event.head_commit.message }}" ]; then
+            COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          fi
+
+          echo ""
+          echo "==== 开始上传到 Firebase App Distribution ===="
+
+          # 部署到 Firebase App Distribution
+          firebase appdistribution:distribute "$APK_PATH" \
+            --app "$FIREBASE_APP_ID" \
+            --groups "${{ env.FIREBASE_GROUPS }}" \
+            --project "$FIREBASE_PROJECT_ID" \
+            --release-notes "📱 SmartAge Nurse App - 自动构建
+
+          📦 版本: $VERSION
+          🔖 Commit: ${{ github.sha }}
+          📝 提交信息: $COMMIT_MESSAGE
+          👤 作者: ${{ github.actor }}
+          ✅ 批准人: ${{ github.actor }}
+          🕒 构建时间: $(date +'%Y-%m-%d %H:%M:%S')
+          🌿 分支: ${{ github.ref_name }}
+          ✅ 已通过 GitHub Environment 审批"
+
+          echo ""
+          echo "✅ Firebase App Distribution 上传成功！"
+          echo "📦 上传版本: $VERSION"
+
+      - name: Cleanup Firebase key
+        if: always()
+        run: rm -f "${GITHUB_WORKSPACE}/firebase_service_account.json" || true
+
+      - name: 发送最终构建成功通知到 Lark
+        if: success()
+        run: |
+          VERSION=$(cat pubspec.yaml | grep 'version:' | cut -d ' ' -f 2)
+          TEST_STATUS="${{ needs.build.outputs.robo_test_status || 'unknown' }}"
+          if [ "$TEST_STATUS" == "failed" ]; then
+            TEST_MSG="⚠️ Firebase Test Lab - Random Crawl Test: 失败（但已批准部署）"
+          else
+            TEST_MSG="✅ Firebase Test Lab - Random Crawl Test: $TEST_STATUS"
+          fi
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"✅ SmartAge App - 构建和部署成功完成！\\n\\n测试结果：\\n- $TEST_MSG\\n\\n构建信息：\\n- 版本: $VERSION\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 批准人: ${{ github.actor }}\\n- 部署时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\nAPK 已成功部署到 Firebase App Distribution。\\n测试组: ${{ env.FIREBASE_GROUPS }}\\n\\n查看测试报告：\\nhttps://console.firebase.google.com/project/${{ env.FIREBASE_PROJECT_ID }}/testlab/histories\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"
+
+      - name: 发送部署失败通知到 Lark
+        if: failure()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"❌ SmartAge App - 部署失败！\\n\\n部署信息：\\n- Commit: ${{ github.sha }}\\n- 分支: ${{ github.ref_name }}\\n- 作者: ${{ github.actor }}\\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\\n\\n请查看 GitHub Actions 日志获取详细错误信息：\\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\\n\\n此通知由 GitHub Actions 自动发送。\"
+              }
+            }"

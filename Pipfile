@@ -1,0 +1,18 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+
+[packages]
+fastapi = "==0.104.1"
+uvicorn = {extras = ["standard"],version = "==0.24.0"}
+langchain = "==0.1.0"
+langchain-community = "==0.0.10"
+pydantic = "==2.5.0"
+python-dotenv = "==1.0.0"
+httpx = "==0.25.2"
+
+[requires]
+python_version = "3.7"

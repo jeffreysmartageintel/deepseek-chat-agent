@@ -1,0 +1,421 @@
+name: "DeepSeek Chat Agent - Build & Deploy to Google Cloud Run"
+
+# 工作流变量配置
+env:
+  # Lark 通知配置变量
+  LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }} # Lark Webhook URL（需要在 GitHub Secrets 中配置）
+
+  # Google Cloud 配置变量
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: deepseek-chat-agent
+  REGION: asia-east1
+
+  # Artifactory 配置变量
+  ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }} # Artifactory URL，例如: https://your-company.jfrog.io
+  ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO || 'docker-local' }} # Artifactory Docker仓库名称
+  ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
+  ARTIFACTORY_PASSWORD: ${{ secrets.ARTIFACTORY_PASSWORD }}
+
+  # 构建配置变量
+  CHECK_TIME_BJ: "19:30" # 检查 push 的时间点（北京时间 19:30）
+
+on:
+  schedule:
+    # 每天 UTC 11:30 执行（对应北京时间 19:30）
+    # 北京时间 = UTC + 8小时，所以 19:30 BJ = 11:30 UTC
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "强制构建（跳过 push 检查）"
+        required: false
+        default: false
+        type: boolean
+      approve_deployment:
+        description: "批准部署到 Cloud Run（仅在构建完成后使用）"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  id-token: write
+
+jobs:
+  check-push:
+    name: "检查是否有代码 Push"
+    runs-on: ubuntu-latest
+    outputs:
+      has_push: ${{ steps.check.outputs.has_push }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史记录
+
+      - name: 检查今天 00:00-19:30（北京时间）之间是否有 Push
+        id: check
+        run: |
+          # 获取当前时间（UTC）
+          CURRENT_DATE_UTC=$(date -u +%Y-%m-%d)
+          CURRENT_TIME_UTC=$(date -u +%H:%M)
+          CHECK_TIME_BJ="${{ env.CHECK_TIME_BJ }}"  # 北京时间 19:30
+
+          # 计算北京时间的当前日期和时间
+          CURRENT_DATE_BJ=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
+          CURRENT_TIME_BJ=$(TZ='Asia/Shanghai' date +%H:%M)
+
+          echo "=========================================="
+          echo "Push 检查信息"
+          echo "=========================================="
+          echo "当前 UTC 时间: $CURRENT_DATE_UTC $CURRENT_TIME_UTC"
+          echo "当前北京时间: $CURRENT_DATE_BJ $CURRENT_TIME_BJ"
+          echo "检查时间点 (北京时间): $CHECK_TIME_BJ"
+          echo "Workflow 触发方式: ${{ github.event_name }}"
+          echo "强制构建参数: ${{ github.event.inputs.force_build }}"
+          echo ""
+
+          # 如果是手动触发且勾选了批准部署，跳过 push 检查（这是用于批准部署的）
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.approve_deployment }}" == "true" ]; then
+            echo "=========================================="
+            echo "手动批准部署触发"
+            echo "=========================================="
+            echo "✅ 这是手动批准部署的触发，跳过 push 检查"
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 如果是手动触发但未勾选批准，检查是否是强制构建
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_build }}" == "true" ]; then
+            echo "=========================================="
+            echo "强制构建触发"
+            echo "=========================================="
+            echo "✅ 强制构建已启用，跳过时间检查"
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 如果是定时任务，检查时间范围
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "=========================================="
+            echo "非定时任务触发"
+            echo "=========================================="
+            echo "⚠️ 只有定时任务（19:30 北京时间）才会自动检查 push"
+            echo "has_push=false" >> $GITHUB_OUTPUT
+            echo "=========================================="
+            exit 0
+          fi
+
+          # 计算检查时间范围（北京时间今天 00:00 到 19:30）
+          # 北京时间 00:00 = UTC 前一天 16:00
+          # 北京时间 19:30 = UTC 当天 11:30
+
+          # 获取北京时间今天的开始时间（UTC 前一天 16:00）
+          BJ_TODAY_START_UTC=$(date -u -d "yesterday 16:00" +%Y-%m-%dT%H:%M:%SZ)
+
+          # 获取北京时间今天的结束时间（UTC 当天 11:30）
+          # 将北京时间 19:30 转换为 UTC 时间（减去 8 小时）
+          CHECK_HOUR_BJ=$(echo $CHECK_TIME_BJ | cut -d':' -f1)
+          CHECK_MINUTE_BJ=$(echo $CHECK_TIME_BJ | cut -d':' -f2)
+
+          # 计算 UTC 时间（北京时间 - 8小时）
+          if [ $CHECK_HOUR_BJ -ge 8 ]; then
+            # 如果北京时间 >= 08:00，UTC 时间是同一天
+            CHECK_HOUR_UTC=$((CHECK_HOUR_BJ - 8))
+            CHECK_DATE_UTC="$CURRENT_DATE_UTC"
+          else
+            # 如果北京时间 < 08:00，UTC 时间是前一天
+            CHECK_HOUR_UTC=$((CHECK_HOUR_BJ + 16))
+            CHECK_DATE_UTC=$(date -u -d "yesterday" +%Y-%m-%d)
+          fi
+
+          # 格式化 UTC 时间
+          CHECK_TIME_UTC=$(printf "%02d:%02d" $CHECK_HOUR_UTC $CHECK_MINUTE_BJ)
+          BJ_TODAY_END_UTC="${CHECK_DATE_UTC}T${CHECK_TIME_UTC}:00Z"
+
+          echo "检查时间范围 (UTC): $BJ_TODAY_START_UTC 到 $BJ_TODAY_END_UTC"
+          echo "检查时间范围 (北京时间): 今天 00:00 到 $CHECK_TIME_BJ"
+          echo ""
+
+          # 显示所有今天的 commit（用于调试）
+          echo "今天所有的 commit (UTC 时间):"
+          git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          # 显示最近 10 个 commit（用于调试）
+          echo "最近 10 个 commit:"
+          git log -10 --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          # 检查指定时间范围内是否有 commit
+          COMMITS=$(git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline | wc -l)
+
+          # 显示该时间范围内的 commit（用于调试）
+          echo "时间范围内 ($BJ_TODAY_START_UTC 到 $BJ_TODAY_END_UTC) 的 commit:"
+          git log --since="$BJ_TODAY_START_UTC" --until="$BJ_TODAY_END_UTC" --oneline --date=iso --format="%h %ad %s" || echo "无 commit"
+          echo ""
+
+          echo "=========================================="
+          echo "检查结果"
+          echo "=========================================="
+          echo "Commit 数量: $COMMITS"
+          echo ""
+
+          # 判断是否执行构建
+          if [ "$COMMITS" -gt 0 ]; then
+            echo "has_push=true" >> $GITHUB_OUTPUT
+            echo "✅ 发现 $COMMITS 个 commit，将执行构建"
+          else
+            echo "has_push=false" >> $GITHUB_OUTPUT
+            echo "❌ 没有发现 commit，跳过构建"
+          fi
+          echo "=========================================="
+
+      - name: 发送检查失败通知到 Lark
+        if: failure()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "❌ DeepSeek Chat Agent - 检查 Push 失败！\n\n失败信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+  send-no-push-email:
+    name: "发送无 Push 通知到 Lark"
+    runs-on: ubuntu-latest
+    needs: check-push
+    if: needs.check-push.outputs.has_push == 'false'
+    steps:
+      - name: 发送 Lark 通知
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "📭 DeepSeek Chat Agent - 今日无需构建\n\n由于今天 19:30（北京时间）之前没有代码 push 到仓库，今天不需要构建代码。\n\n日期: $(date +'%Y-%m-%d')\n时间: $(date +'%H:%M:%S')\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+  build:
+    name: "构建 Docker 镜像"
+    runs-on: ubuntu-latest
+    needs: check-push
+    if: |
+      needs.check-push.outputs.has_push == 'true' || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.approve_deployment == 'true')
+    outputs:
+      build_run_id: ${{ github.run_id }}
+      build_sha: ${{ github.sha }}
+      image_tag: ${{ steps.build.outputs.image_tag }}
+      image_gcr: ${{ steps.build.outputs.image_gcr }}
+      image_artifactory: ${{ steps.build.outputs.image_artifactory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
+
+      - name: 构建 Docker 镜像
+        id: build
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_GCR="gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
+          IMAGE_ARTIFACTORY="${{ env.ARTIFACTORY_URL }}/${{ env.ARTIFACTORY_REPO }}/${{ env.SERVICE_NAME }}:$IMAGE_TAG"
+
+          echo "=========================================="
+          echo "构建 Docker 镜像"
+          echo "=========================================="
+          echo "镜像标签: $IMAGE_TAG"
+          echo "GCR 镜像: $IMAGE_GCR"
+          echo "Artifactory 镜像: $IMAGE_ARTIFACTORY"
+          echo ""
+
+          # 构建镜像
+          docker build -t $IMAGE_GCR -t $IMAGE_ARTIFACTORY -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest .
+
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image_gcr=$IMAGE_GCR" >> $GITHUB_OUTPUT
+          echo "image_artifactory=$IMAGE_ARTIFACTORY" >> $GITHUB_OUTPUT
+
+          echo "✅ Docker 镜像构建完成"
+
+      - name: 推送镜像到 Google Container Registry
+        run: |
+          echo "推送镜像到 GCR..."
+          docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ steps.build.outputs.image_tag }}
+          docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
+          echo "✅ 镜像已推送到 GCR"
+
+      - name: 推送镜像到 Artifactory
+        if: env.ARTIFACTORY_URL != '' && env.ARTIFACTORY_USER != '' && env.ARTIFACTORY_PASSWORD != ''
+        run: |
+          echo "=========================================="
+          echo "推送镜像到 Artifactory"
+          echo "=========================================="
+
+          # 登录到 Artifactory
+          echo "${{ env.ARTIFACTORY_PASSWORD }}" | docker login ${{ env.ARTIFACTORY_URL }} -u "${{ env.ARTIFACTORY_USER }}" --password-stdin
+
+          # 推送镜像
+          docker push ${{ steps.build.outputs.image_artifactory }}
+
+          echo "✅ 镜像已推送到 Artifactory"
+          echo "镜像地址: ${{ steps.build.outputs.image_artifactory }}"
+
+      - name: 发送构建成功等待批准通知到 Lark
+        if: success()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "✅ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ steps.build.outputs.image_tag }}\n- GCR 镜像: ${{ steps.build.outputs.image_gcr }}\n- Artifactory 镜像: ${{ steps.build.outputs.image_artifactory }}\n\n📋 请前往 GitHub Actions 批准部署（GitHub Environment 审批）：\n1. 前往当前工作流运行页面：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n2. 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n3. 点击 '\''Review deployments'\'' 按钮\n4. 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+      - name: 发送构建失败通知到 Lark
+        if: failure()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "❌ DeepSeek Chat Agent - 构建失败！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+  notify-pending-approval:
+    name: "通知等待部署批准"
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.result == 'success'
+    steps:
+      - name: 发送等待批准通知到 Lark
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "⏳ DeepSeek Chat Agent - 构建成功，等待部署批准\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 构建时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n📋 批准部署步骤（GitHub Environment 审批）：\n\n1️⃣ 前往当前工作流运行页面\n   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n2️⃣ 找到 '\''部署到 Google Cloud Run（需要批准）'\'' job\n\n3️⃣ 点击 '\''Review deployments'\'' 按钮\n\n4️⃣ 点击 '\''Approve and deploy'\'' 按钮批准部署\n\n💡 提示：只有配置在 Environment 中的 Required reviewers 才能批准\n\n工作流运行 ID: ${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+  deploy-to-cloud-run:
+    name: "部署到 Google Cloud Run（需要批准）"
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: needs.build.result == 'success'
+    environment:
+      name: cloud-run-production
+      url: https://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: 显示批准信息
+        run: |
+          echo "=========================================="
+          echo "部署批准信息"
+          echo "=========================================="
+          echo "✅ 部署已通过 GitHub Environment 审批"
+          echo "审批人: ${{ github.actor }}"
+          echo "触发者: ${{ github.actor }}"
+          echo "触发事件: ${{ github.event_name }}"
+          echo "镜像: ${{ needs.build.outputs.image_gcr }}"
+          echo "=========================================="
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: 部署到 Google Cloud Run
+        id: deploy
+        run: |
+          echo "=========================================="
+          echo "部署到 Google Cloud Run"
+          echo "=========================================="
+          echo "服务名称: ${{ env.SERVICE_NAME }}"
+          echo "区域: ${{ env.REGION }}"
+          echo "镜像: ${{ needs.build.outputs.image_gcr }}"
+          echo ""
+
+          # 部署到 Cloud Run
+          # 注意：Gradio 应用需要更多内存和 CPU 资源
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ needs.build.outputs.image_gcr }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }},DEEPSEEK_API_BASE=https://api.deepseek.com/v1 \
+            --memory 1Gi \
+            --cpu 2 \
+            --timeout 300 \
+            --max-instances 10 \
+            --min-instances 0 \
+            --quiet
+
+          echo "✅ 部署完成"
+
+      - name: 获取服务 URL
+        id: service_url
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --format 'value(status.url)')
+          echo "service_url=$SERVICE_URL" >> $GITHUB_OUTPUT
+          echo "=========================================="
+          echo "服务部署成功"
+          echo "=========================================="
+          echo "服务 URL: $SERVICE_URL"
+          echo "Gradio UI: $SERVICE_URL"
+          echo "=========================================="
+
+      - name: 发送最终部署成功通知到 Lark
+        if: success()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "✅ DeepSeek Chat Agent - 构建和部署成功完成！\n\n构建信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 批准人: ${{ github.actor }}\n- 部署时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像标签: ${{ needs.build.outputs.image_tag }}\n\n服务信息：\n- 服务名称: ${{ env.SERVICE_NAME }}\n- 区域: ${{ env.REGION }}\n- Gradio UI: ${{ steps.service_url.outputs.service_url }}\n\n镜像信息：\n- GCR 镜像: ${{ needs.build.outputs.image_gcr }}\n- Artifactory 镜像: ${{ needs.build.outputs.image_artifactory }}\n\n查看服务：\nhttps://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}?project=${{ env.PROJECT_ID }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
+
+      - name: 发送部署失败通知到 Lark
+        if: failure()
+        run: |
+          curl -X POST "${{ env.LARK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "❌ DeepSeek Chat Agent - 部署失败！\n\n部署信息：\n- Commit: ${{ github.sha }}\n- 分支: ${{ github.ref_name }}\n- 作者: ${{ github.actor }}\n- 失败时间: $(date +'%Y-%m-%d %H:%M:%S')\n- 镜像: ${{ needs.build.outputs.image_gcr }}\n\n请查看 GitHub Actions 日志获取详细错误信息：\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n此通知由 GitHub Actions 自动发送。"
+              }
+            }'
