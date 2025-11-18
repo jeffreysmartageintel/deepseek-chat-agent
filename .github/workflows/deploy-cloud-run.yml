@@ -582,8 +582,15 @@ jobs:
           echo "区域: ${{ env.REGION }}"
           echo ""
 
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image "$IMAGE_URL" \
+          # 检查服务是否已存在
+          SERVICE_EXISTS=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format="value(metadata.name)" 2>/dev/null || echo "")
+
+          # 构建部署命令
+          DEPLOY_CMD="gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image \"$IMAGE_URL\" \
             --platform managed \
             --region ${{ env.REGION }} \
             --project ${{ env.PROJECT_ID }} \
@@ -595,14 +602,25 @@ jobs:
             --max-instances 10 \
             --min-instances 0 \
             --cpu-boost \
-            --port 8080 \
-            --no-traffic \
-            --quiet || {
+            --port 8080"
+
+          # 只有在服务已存在时才使用 --no-traffic
+          if [ -n "$SERVICE_EXISTS" ]; then
+            echo "服务已存在，使用 --no-traffic 参数（新版本不会立即接收流量）"
+            DEPLOY_CMD="$DEPLOY_CMD --no-traffic"
+          else
+            echo "服务不存在，创建新服务（不使用 --no-traffic）"
+          fi
+
+          DEPLOY_CMD="$DEPLOY_CMD --quiet"
+
+          # 执行部署
+          eval $DEPLOY_CMD || {
               echo "❌ 部署失败，获取详细错误信息..."
               gcloud run services describe ${{ env.SERVICE_NAME }} \
                 --region ${{ env.REGION }} \
                 --project ${{ env.PROJECT_ID }} \
-                --format="value(status.conditions)" || true
+                --format="value(status.conditions)" 2>/dev/null || echo "服务不存在或无法获取状态"
               exit 1
             }
 
