@@ -109,12 +109,9 @@ def main():
         api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
         logger.info(f"✓ DEEPSEEK_API_BASE: {api_base}")
         
-        # 立即启动健康检查服务器（让 Cloud Run 知道容器已启动）
-        logger.info("Starting health check server...")
-        start_health_check_server(port)
-        logger.info("✓ Health check server ready - Cloud Run can now detect the container")
-        
-        # 导入并启动 Gradio 应用（在后台进行，不阻塞健康检查）
+        # 导入并启动 Gradio 应用
+        # 注意：直接启动 Gradio，不使用健康检查服务器
+        # Gradio 启动后会立即监听端口，满足 Cloud Run 的要求
         logger.info("Importing Gradio app module...")
         from app.gradio_app import create_demo
         
@@ -125,12 +122,6 @@ def main():
         logger.info(f"Launching Gradio server on 0.0.0.0:{port}")
         logger.info("Waiting for Gradio to start...")
         
-        # 停止健康检查服务器（Gradio 将接管端口）
-        if health_server:
-            logger.info("Stopping health check server (Gradio will take over)...")
-            health_server.shutdown()
-            health_server.server_close()
-        
         # 启动 Gradio - 使用阻塞模式
         # 重要：server_name 必须是 "0.0.0.0" 才能从外部访问
         # root_path 设置：
@@ -140,6 +131,7 @@ def main():
         if root_path == "":
             root_path = None
         
+        # 启动 Gradio（阻塞调用，会一直运行）
         demo.launch(
             server_name="0.0.0.0",  # 必须绑定到 0.0.0.0，不能是 127.0.0.1 或 localhost
             server_port=port,
