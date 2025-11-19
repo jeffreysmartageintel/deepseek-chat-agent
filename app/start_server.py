@@ -29,9 +29,6 @@ except ImportError:
 import os
 import sys
 import logging
-import threading
-import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
 # 加载 .env 文件（必须在检查环境变量之前）
@@ -45,57 +42,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 全局变量：健康检查服务器
-health_server = None
-health_server_thread = None
-
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    """简单的健康检查处理器"""
-    
-    def do_GET(self):
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok","service":"deepseek-chat-agent"}')
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        # 禁用默认日志输出，避免干扰
-        pass
-
-
-def start_health_check_server(port):
-    """启动健康检查服务器（在后台线程中）"""
-    global health_server, health_server_thread
-    
-    def run_server():
-        global health_server
-        try:
-            health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-            logger.info(f"✓ Health check server started on port {port}")
-            health_server.serve_forever()
-        except Exception as e:
-            logger.error(f"Health check server error: {e}")
-    
-    health_server_thread = threading.Thread(target=run_server, daemon=True)
-    health_server_thread.start()
-    time.sleep(0.5)  # 给服务器一点时间启动
-    return health_server_thread
-
 
 def main():
     """主启动函数"""
-    global health_server
-    
     try:
         # 获取端口
         port = int(os.getenv("PORT", 8080))
         logger.info("=" * 50)
-        logger.info("Starting DeepSeek Chat Agent")
+        logger.info("Starting DeepSeek Chat Agent - Gradio UI")
         logger.info(f"Port: {port}")
         logger.info("=" * 50)
         
@@ -110,17 +64,26 @@ def main():
         logger.info(f"✓ DEEPSEEK_API_BASE: {api_base}")
         
         # 导入并启动 Gradio 应用
-        # 注意：直接启动 Gradio，不使用健康检查服务器
+        # 直接启动 Gradio，不使用健康检查服务器
         # Gradio 启动后会立即监听端口，满足 Cloud Run 的要求
         logger.info("Importing Gradio app module...")
-        from app.gradio_app import create_demo
+        try:
+            from app.gradio_app import create_demo
+            logger.info("✓ Gradio module imported successfully")
+        except Exception as e:
+            logger.error(f"Failed to import Gradio app: {e}", exc_info=True)
+            raise
         
         logger.info("Creating Gradio demo interface...")
-        demo = create_demo()
-        logger.info("✓ Gradio demo created")
+        try:
+            demo = create_demo()
+            logger.info("✓ Gradio demo created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create Gradio demo: {e}", exc_info=True)
+            raise
         
         logger.info(f"Launching Gradio server on 0.0.0.0:{port}")
-        logger.info("Waiting for Gradio to start...")
+        logger.info("This may take a few seconds...")
         
         # 启动 Gradio - 使用阻塞模式
         # 重要：server_name 必须是 "0.0.0.0" 才能从外部访问
@@ -132,6 +95,7 @@ def main():
             root_path = None
         
         # 启动 Gradio（阻塞调用，会一直运行）
+        # 注意：launch() 会阻塞，直到容器停止
         demo.launch(
             server_name="0.0.0.0",  # 必须绑定到 0.0.0.0，不能是 127.0.0.1 或 localhost
             server_port=port,
@@ -150,15 +114,11 @@ def main():
         
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, shutting down...")
-        if health_server:
-            health_server.shutdown()
         sys.exit(0)
     except Exception as e:
         logger.error(f"Failed to start application: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
-        if health_server:
-            health_server.shutdown()
         sys.exit(1)
 
 
