@@ -320,8 +320,9 @@ jobs:
           echo "Docker 标签: $DOCKER_TAGS"
           echo ""
 
-          # 构建镜像
-          docker build $DOCKER_TAGS .
+          # 构建镜像（使用 --no-cache 确保使用最新代码）
+          # 注意：移除 --no-cache 可以加快构建速度，但可能使用旧缓存
+          docker build --no-cache $DOCKER_TAGS .
 
           # 检查构建是否成功
           BUILD_EXIT_CODE=$?
@@ -591,6 +592,7 @@ jobs:
           # 构建部署命令
           # 注意：PORT 是 Cloud Run 的保留环境变量，不能手动设置
           # Cloud Run 会自动设置 PORT=8080，应用应该从环境变量读取
+          # 重要：添加 --startup-timeout 确保 Gradio 有足够时间启动
           DEPLOY_CMD="gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image \"$IMAGE_URL\" \
             --platform managed \
@@ -601,6 +603,7 @@ jobs:
             --memory 2Gi \
             --cpu 2 \
             --timeout 300 \
+            --startup-timeout 300 \
             --max-instances 10 \
             --min-instances 0 \
             --cpu-boost \
