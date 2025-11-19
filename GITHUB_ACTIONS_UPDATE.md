@@ -24,26 +24,32 @@ docker build --no-cache $DOCKER_TAGS .
 
 **原因**: 确保每次构建都使用最新代码，不使用缓存，避免部署旧版本。
 
-### 2. 添加启动超时参数
+### 2. 启动超时说明
 
-**位置**: `.github/workflows/deploy-cloud-run.yml` (第 606 行)
-
-**修改前**:
-```yaml
---timeout 300 \
---max-instances 10 \
-```
-
-**修改后**:
-```yaml
---timeout 300 \
---startup-timeout 300 \
---max-instances 10 \
-```
+**注意**: `gcloud run deploy` 命令不支持 `--startup-timeout` 参数
 
 **原因**: 
-- `--startup-timeout 300`: 设置启动超时为 300 秒（5 分钟），确保 Gradio 有足够时间启动
-- 避免容器启动超时错误
+- `gcloud run deploy` 不支持 `--startup-timeout` 参数（这是 gcloud CLI 的限制）
+- 启动超时需要在 Cloud Run Console 中手动设置，或通过服务配置 YAML 设置
+- 代码已优化，直接启动 Gradio，启动时间应该足够快，通常不需要额外设置
+
+**如果需要设置启动超时**:
+1. 在 Cloud Run Console 中：
+   - 进入服务页面
+   - 点击 "编辑和部署新版本"
+   - 展开 "容器、变量、密钥、连接"
+   - 在 "启动超时" 中设置为 300 秒（或更长）
+
+2. 或使用服务配置 YAML：
+   ```yaml
+   apiVersion: serving.knative.dev/v1
+   kind: Service
+   spec:
+     template:
+       spec:
+         timeoutSeconds: 300
+         containerConcurrency: 80
+   ```
 
 ## 代码变更说明
 
@@ -154,8 +160,7 @@ gcloud run deploy deepseek-chat-agent `
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| `--startup-timeout` | 300 | 启动超时 300 秒，确保 Gradio 有足够时间启动 |
-| `--timeout` | 300 | 请求超时 300 秒 |
+| `--timeout` | 300 | 请求超时 300 秒（注意：启动超时需要在 Console 中设置） |
 | `--memory` | 2Gi | 内存 2GB（Gradio 需要） |
 | `--cpu` | 2 | CPU 2 核 |
 | `--port` | 8080 | 监听端口 8080 |

@@ -592,7 +592,9 @@ jobs:
           # 构建部署命令
           # 注意：PORT 是 Cloud Run 的保留环境变量，不能手动设置
           # Cloud Run 会自动设置 PORT=8080，应用应该从环境变量读取
-          # 重要：添加 --startup-timeout 确保 Gradio 有足够时间启动
+          # 注意：--startup-timeout 不是 gcloud run deploy 的有效参数
+          # 启动超时需要在 Cloud Run Console 中设置，或通过服务配置 YAML 设置
+          # 代码已优化，直接启动 Gradio，启动时间应该足够快
           DEPLOY_CMD="gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image \"$IMAGE_URL\" \
             --platform managed \
@@ -603,7 +605,6 @@ jobs:
             --memory 2Gi \
             --cpu 2 \
             --timeout 300 \
-            --startup-timeout 300 \
             --max-instances 10 \
             --min-instances 0 \
             --cpu-boost \

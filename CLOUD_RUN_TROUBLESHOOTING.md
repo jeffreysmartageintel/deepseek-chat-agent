@@ -9,9 +9,20 @@ The user-provided container failed to start and listen on the port defined provi
 
 ## 解决方案
 
-### 方案 1: 增加启动超时时间（推荐）
+### 方案 1: 在 Cloud Run Console 中设置启动超时（推荐）
 
-在 Cloud Run Console 或部署命令中添加 `--startup-timeout` 参数：
+**注意**: `gcloud run deploy` 命令不支持 `--startup-timeout` 参数，需要在 Console 中设置。
+
+**在 Cloud Run Console 中设置：**
+
+1. 进入 Cloud Run 服务页面
+2. 点击 "编辑和部署新版本"
+3. 展开 "容器、变量、密钥、连接"
+4. 在 "启动超时" 中设置为 **300 秒**（或更长）
+5. 在 "请求超时" 中设置为 **300 秒**
+6. 点击 "部署"
+
+**使用 gcloud 命令部署（不包含启动超时）：**
 
 ```powershell
 gcloud run deploy deepseek-chat-agent `
@@ -24,13 +35,12 @@ gcloud run deploy deepseek-chat-agent `
     --memory 2Gi `
     --cpu 2 `
     --timeout 300 `
-    --startup-timeout 300 `
     --port 8080
 ```
 
 **关键参数：**
-- `--startup-timeout 300`: 设置启动超时为 300 秒（5 分钟）
 - `--timeout 300`: 设置请求超时为 300 秒
+- 启动超时需要在 Console 中手动设置
 
 ### 方案 2: 在 Cloud Run Console 中设置
 
