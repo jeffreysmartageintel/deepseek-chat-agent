@@ -29,5 +29,6 @@ EXPOSE 8080
 
 # 设置启动命令 - 使用启动脚本，确保正确监听端口
 # 启动脚本会先启动健康检查服务器，然后启动 Gradio 应用
-CMD python -m app.start_server
+# 使用 JSON 数组格式（exec 格式）以确保信号正确处理
+CMD ["python", "-m", "app.start_server"]
 

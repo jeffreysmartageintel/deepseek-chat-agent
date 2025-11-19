@@ -2,6 +2,27 @@
 Gradio Web UI for DeepSeek Chat Agent
 集成方案：直接使用 main.py 中的 LLM，无需通过 HTTP API
 """
+# 兼容性修复：处理 huggingface_hub HfFolder 导入问题
+# 在导入 gradio 之前修复，避免导入错误
+try:
+    import huggingface_hub
+    # 如果 HfFolder 不存在，创建一个兼容的类
+    if not hasattr(huggingface_hub, 'HfFolder'):
+        class HfFolder:
+            """兼容性类，替代已移除的 HfFolder"""
+            @staticmethod
+            def save_token(token: str):
+                """保存 token 的占位方法"""
+                pass
+            
+            @staticmethod
+            def get_token():
+                """获取 token 的占位方法"""
+                return None
+        huggingface_hub.HfFolder = HfFolder
+except ImportError:
+    pass
+
 import gradio as gr
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -249,6 +270,13 @@ if __name__ == "__main__":
         # 启动应用
         # share=False 在 Cloud Run 上不需要，因为已经有公共 URL
         # 添加阻塞模式，确保应用持续运行
+        # root_path 设置：
+        # - 本地开发：不设置或设置为 None（避免 URL 出现双斜杠）
+        # - Cloud Run 部署：设置为 "/" 或根据实际路径设置
+        root_path = os.getenv("GRADIO_ROOT_PATH", None)
+        if root_path == "":
+            root_path = None
+        
         demo.launch(
             server_name="0.0.0.0",  # 允许外部访问
             server_port=port,  # 使用环境变量 PORT 或默认 8080
@@ -257,7 +285,7 @@ if __name__ == "__main__":
             show_api=False,  # 在 Cloud Run 上不需要显示 API 文档
             prevent_thread_lock=False,  # 允许阻塞，保持容器运行
             inbrowser=False,  # Cloud Run 不需要打开浏览器
-            root_path="/"  # 设置根路径
+            root_path=root_path  # 本地开发时不设置，避免 URL 双斜杠问题
         )
     except Exception as e:
         logger.error(f"Failed to start Gradio application: {e}", exc_info=True)

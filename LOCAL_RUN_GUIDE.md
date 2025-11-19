@@ -70,8 +70,12 @@ pip install -r requirements.txt
 如果安装过程中遇到问题，可以尝试：
 
 ```bash
-# 使用国内镜像源（如果网络较慢）
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 使用官方 PyPI 源（默认）
+pip install -r requirements.txt
+
+# 如果网络较慢，可以升级 pip 后重试
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
 ### 步骤 4: 配置环境变量
@@ -100,13 +104,15 @@ vim .env
 ```env
 # DeepSeek API配置
 DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_API_BASE=https://api.deepseek.com/v1
 
-# 服务器配置
+# 服务器配置（可选，默认8080）
 PORT=8080
 ```
 
-**重要**: 将 `your_deepseek_api_key_here` 替换为你的实际 DeepSeek API Key。
+**重要**: 
+- 将 `your_deepseek_api_key_here` 替换为你的实际 DeepSeek API Key
+- `DEEPSEEK_API_BASE` 必须是 `https://api.deepseek.com/v1`（注意 `/v1` 后缀）
 
 ### 步骤 5: 修改代码以支持 .env 文件（如果需要）
 
@@ -114,20 +120,37 @@ PORT=8080
 
 ### 步骤 6: 运行应用
 
-#### 方法 1: 直接运行 Python 文件
+#### 方法 1: 启动 Gradio UI（推荐，用于交互式聊天界面）
 
-```bash
-# 确保在项目根目录
-python -m app.main
+**Windows (PowerShell):**
+```powershell
+# 确保虚拟环境已激活
+# 从项目根目录运行
+python -m app.start_server
 ```
 
-或者：
-
-```bash
-python app/main.py
+**Windows (CMD):**
+```cmd
+python -m app.start_server
 ```
 
-#### 方法 2: 使用 uvicorn 命令（推荐）
+**macOS/Linux:**
+```bash
+python -m app.start_server
+```
+
+或者直接运行 Gradio 应用：
+```bash
+python -m app.gradio_app
+```
+
+**启动成功后，访问：**
+- 浏览器打开：`http://localhost:8080`
+- 你会看到一个交互式的聊天界面
+
+#### 方法 2: 启动 FastAPI 服务（用于 API 调用）
+
+**使用 uvicorn 命令（推荐）：**
 
 ```bash
 # 从项目根目录运行
@@ -139,7 +162,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 - `--host 0.0.0.0`: 允许外部访问（默认只允许 localhost）
 - `--port 8080`: 指定端口号
 
-#### 方法 3: 使用环境变量指定端口
+**使用环境变量指定端口：**
 
 ```bash
 # Windows (PowerShell)
@@ -152,9 +175,42 @@ set PORT=8080 && uvicorn app.main:app --reload
 PORT=8080 uvicorn app.main:app --reload
 ```
 
+#### 方法 3: 直接运行 Python 文件
+
+```bash
+# 确保在项目根目录
+python -m app.main
+```
+
+或者：
+
+```bash
+python app/main.py
+```
+
 ### 步骤 7: 验证服务运行
 
-服务启动成功后，你会看到类似以下的输出：
+#### Gradio UI 启动成功
+
+如果使用 `python -m app.start_server` 启动 Gradio UI，你会看到类似以下的输出：
+
+```
+==================================================
+Starting DeepSeek Chat Agent
+Port: 8080
+==================================================
+✓ DEEPSEEK_API_KEY is set
+✓ DEEPSEEK_API_BASE: https://api.deepseek.com/v1
+Importing Gradio app module...
+Creating Gradio demo interface...
+✓ Gradio demo created
+Launching Gradio server on 0.0.0.0:8080
+Running on local URL:  http://127.0.0.1:8080
+```
+
+#### FastAPI 服务启动成功
+
+如果使用 `uvicorn` 启动 FastAPI 服务，你会看到类似以下的输出：
 
 ```
 INFO:     Started server process [xxxxx]
@@ -163,9 +219,19 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 ```
 
-### 步骤 8: 测试 API
+### 步骤 8: 测试应用
 
-#### 方法 1: 使用浏览器访问
+#### 方法 1: 使用 Gradio UI（如果启动了 Gradio）
+
+1. **打开浏览器访问**:
+   ```
+   http://localhost:8080
+   ```
+   你会看到一个交互式的聊天界面，可以直接输入问题与 AI 对话。
+
+#### 方法 2: 使用 FastAPI API（如果启动了 FastAPI 服务）
+
+**使用浏览器访问：**
 
 1. **健康检查**:
    ```
@@ -186,20 +252,58 @@ INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
    http://localhost:8080/redoc
    ```
 
-#### 方法 2: 使用 curl 命令
+#### 方法 2: 使用 PowerShell 命令测试 API
 
-**Windows (PowerShell):**
+**Windows PowerShell（推荐方法）：**
+
 ```powershell
+# 方法 A: 使用 Invoke-WebRequest（PowerShell 原生命令）
 # 健康检查
-curl http://localhost:8080/health
+Invoke-WebRequest -Uri "http://localhost:8080/health" -Method GET -UseBasicParsing
 
 # 测试简化聊天接口
-curl -X POST "http://localhost:8080/api/chat/simple?user_input=你好，请介绍一下你自己" -H "Content-Type: application/json"
+Invoke-WebRequest -Uri "http://localhost:8080/api/chat/simple?user_input=你好" -Method POST -ContentType "application/json" -UseBasicParsing
 
 # 测试完整聊天接口
-curl -X POST "http://localhost:8080/api/chat" `
-  -H "Content-Type: application/json" `
-  -d '{"messages": [{"role": "user", "content": "什么是人工智能？"}]}'
+$body = @{
+    messages = @(
+        @{
+            role = "user"
+            content = "什么是人工智能？"
+        }
+    )
+    temperature = 0.7
+    max_tokens = 5000
+} | ConvertTo-Json -Depth 10
+
+Invoke-WebRequest -Uri "http://localhost:8080/api/chat" `
+    -Method POST `
+    -Body $body `
+    -ContentType "application/json" `
+    -UseBasicParsing
+```
+
+**Windows PowerShell（使用 curl.exe，如果已安装 Git for Windows）：**
+
+```powershell
+# 使用 curl.exe（不是 PowerShell 的 curl 别名）
+# 健康检查
+curl.exe http://localhost:8080/health
+
+# 测试简化聊天接口
+curl.exe -X POST "http://localhost:8080/api/chat/simple?user_input=你好" -H "Content-Type: application/json"
+
+# 测试完整聊天接口
+curl.exe -X POST "http://localhost:8080/api/chat" `
+    -H "Content-Type: application/json" `
+    -d '{\"messages\": [{\"role\": \"user\", \"content\": \"什么是人工智能？\"}]}'
+```
+
+**使用测试脚本（最简单）：**
+
+```powershell
+# 运行测试脚本
+.\test_api_powershell.ps1
 ```
 
 **macOS/Linux:**
